@@ -123,7 +123,7 @@ if (require.main === module) (async () => {
       window.liveData = { cards: window.makeCards(window.fixtures), errors: [] };
       window.root.render(window.route.render());
     });
-    await rows.nth(3).locator('[data-banked-resets]').filter({ hasText: /hist\./ }).waitFor({ timeout: 2000 });
+    assert.doesNotMatch(await rows.nth(3).locator('[data-banked-resets]').innerText(), /hist\./, 'fresh vendor observation stays fresh when reused from cache');
     await page.evaluate(() => {
       window.fixtures[3].cache_hit = false;
       window.liveData = { cards: window.makeCards(window.fixtures), errors: [] };

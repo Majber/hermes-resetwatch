@@ -1177,7 +1177,8 @@ function UsageBar({ remaining, percent, label }) {
     'aria-valuemax': 100,
     'aria-valuenow': percent,
     style: {
-      width: 92,
+      width: '100%',
+      minWidth: 92,
       height: 6,
       borderRadius: 99,
       background: 'var(--ui-stroke-secondary)',
@@ -1368,7 +1369,7 @@ function AccountStatusCard({ snap, nowMs }) {
       snap.last_attempt_at ? jsx('span', { children: `${t('attempted')}: ${stamp(snap.last_attempt_at)}` }) : null,
       snap.inspected_at ? jsx('span', { children: `${t('inspected')}: ${stamp(snap.inspected_at)}` }) : null,
       jsx('span', { children: `${t('grants')}: ${snap.grant_count || 1} · ${Object.entries(snap.grant_states || {}).map(([key, count]) => `${key}: ${count}`).join(' · ')}` }),
-      bankedResetCount(snap) > 0 ? jsx('span', { style: { color: text.tertiary }, children: `${resetBalanceLabel(snap, t, !!snap.cache_hit || !['available', 'limit_reached'].includes(state))} · ${t('bankedResetsHelp')}` }) : null,
+      bankedResetCount(snap) > 0 ? jsx('span', { style: { color: text.tertiary }, children: `${resetBalanceLabel(snap, t, freshness !== 'fresh')} · ${t('bankedResetsHelp')}` }) : null,
       state !== 'available' && state !== 'limit_reached' ? jsx('span', { style: { color: text.tertiary }, children: t('guidance') }) : null
     ]
   })
@@ -1420,7 +1421,7 @@ function resetBalanceLabel(snap, t, historical) {
   return `${t('bankedResets')}: ${bankedResetCount(snap)} · ${t('usableResets')}: ${usable}${historical ? ` · ${t('historicalShort')}` : ''}`
 }
 
-function OverviewQuota({ snap, label, state, nowMs }) {
+function OverviewQuota({ snap, label, state, freshness, nowMs }) {
   const t = useLocalText()
   const mode = useValue($displayMode)
   const window = (snap.windows || []).find(item => String(item.label).toLowerCase() === label.toLowerCase())
@@ -1432,15 +1433,15 @@ function OverviewQuota({ snap, label, state, nowMs }) {
   return jsxs('td', { style: overviewCellStyle, children: [
     jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', lineHeight: '18px' }, children: [
       jsx('strong', { style: { minWidth: 36, color: toneColor(toneForRemaining(remaining)) }, children: percent === null ? '—' : `${percent}%` }),
-      percent === null ? null : jsx(UsageBar, { remaining, percent, label: `${t(label === 'Session' ? 'session' : 'weekly')}: ${percent}% ${t(mode === 'used' ? 'usedMode' : 'remainingMode')}` }),
+      percent === null ? null : jsx('span', { style: { display: 'inline-flex', flex: '1 1 140px', minWidth: 92, maxWidth: 240 }, children: jsx(UsageBar, { remaining, percent, label: `${t(label === 'Session' ? 'session' : 'weekly')}: ${percent}% ${t(mode === 'used' ? 'usedMode' : 'remainingMode')}` }) }),
       historical && percent !== null ? jsx('span', { title: t('history'), style: { fontSize: '0.75rem', color: text.secondary }, children: t('historicalShort') }) : null
     ] }),
-    jsxs('div', { style: { color: text.secondary, fontSize: '0.75rem', whiteSpace: 'nowrap', lineHeight: '16px' }, children: [
+    jsxs('div', { style: { display: 'flex', flexWrap: 'wrap', alignItems: 'baseline', gap: '2px 6px', color: text.secondary, fontSize: '0.75rem', lineHeight: '16px' }, children: [
       window ? compactReset(window.reset_at, nowMs, t) : '—',
       banked > 0 ? jsx('span', { 'data-banked-resets': banked,
         title: `${t('bankedResetsHelp')} · ${t('observed')}: ${observedMillis(snap.fetched_at) ? new Date(observedMillis(snap.fetched_at)).toLocaleString() : t('never')}`,
-        style: { marginLeft: 6, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '0 4px', fontSize: '0.75rem' },
-        children: resetBalanceLabel(snap, t, historical || !!snap.cache_hit) }) : null
+        style: { maxWidth: '100%', boxSizing: 'border-box', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '0 4px', fontSize: '0.75rem' },
+        children: resetBalanceLabel(snap, t, freshness !== 'fresh') }) : null
     ] })
   ] })
 }
@@ -1492,13 +1493,12 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
     jsxs('tr', { 'data-account-row': key || 'unknown', 'data-account-status': state, children: [
       jsxs('td', { style: overviewCellStyle, children: [
         jsxs('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap', lineHeight: '18px' }, children: [
-          jsx('strong', { title: alias || undefined, style: { maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }, children: alias || snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
-          jsx('span', { style: { color: text.secondary, fontSize: '0.75rem' }, children: key.slice(0, 8) })
+          jsx('strong', { title: alias || undefined, style: { maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }, children: alias || snapshotAccountLabel(snap) || familyTitle(snap.provider) })
         ] }),
         jsx('div', { 'data-auth-health': auth, title: t('authHelp'), style: { fontSize: '0.75rem', lineHeight: '16px', whiteSpace: 'nowrap', color: auth === 'revoked' ? text.red : text.secondary }, children: `${t('authLabel')}: ${t(`short_${auth}`)}` })
       ] }),
-      jsx(OverviewQuota, { snap, label: 'Session', state, nowMs }),
-      jsx(OverviewQuota, { snap, label: 'Weekly', state, nowMs }),
+      jsx(OverviewQuota, { snap, label: 'Session', state, freshness, nowMs }),
+      jsx(OverviewQuota, { snap, label: 'Weekly', state, freshness, nowMs }),
       jsxs('td', { style: overviewCellStyle, children: [
         jsx('div', { 'data-quota-freshness': freshness, title: `${t('freshnessHelp')} · ${compactObservation(snap.fetched_at, nowMs, t)}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '0.75rem', lineHeight: '18px' }, children: `${t('quotaLabel')}: ${t(`short_${freshness}`)}${freshness === 'fresh' ? ` · ${t(`short_${availability}`)}` : ''}` }),
         jsx('span', { title: t('observed'), style: { color: text.secondary, fontSize: '0.75rem', marginRight: 6 }, children: compactObservation(snap.fetched_at, nowMs, t) }),
@@ -1533,9 +1533,9 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
 
 function AccountOverviewTable({ accounts, nowMs, accountSort }) {
   const t = useLocalText()
-  return jsx('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', maxWidth: 1160, minWidth: 0 }, children: jsxs('table', {
-    'aria-label': `Codex · ${t('heading')}`, style: { width: '100%', minWidth: 960, borderCollapse: 'collapse', fontSize: '0.8125rem', lineHeight: '18px' }, children: [
-      jsx('colgroup', { children: [['account', '24%'], ['session', '18%'], ['weekly', '37%'], ['observation', '21%']]
+  return jsx('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', minWidth: 0 }, children: jsxs('table', {
+    'aria-label': `Codex · ${t('heading')}`, style: { width: '100%', minWidth: 960, tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '0.8125rem', lineHeight: '18px' }, children: [
+      jsx('colgroup', { children: [['account', '22%'], ['session', '24%'], ['weekly', '32%'], ['observation', '22%']]
         .map(([column, width]) => jsx('col', { 'data-account-column': column, style: { width } }, column)) }),
       jsx('thead', { children: jsx('tr', { children: ['account', 'session', 'weekly', 'observation'].map(label => jsx('th', {
         scope: 'col', style: { ...overviewCellStyle, padding: '5px 10px', color: text.secondary, fontWeight: 500, whiteSpace: 'nowrap' }, children: t(label)
@@ -1892,7 +1892,7 @@ function PluginPageContent() {
           gap: 10,
           padding: '10px 16px 6px',
           width: '100%',
-          maxWidth: 1192,
+          maxWidth: '100%',
           boxSizing: 'border-box',
           borderBottom: '1px solid var(--ui-stroke-secondary)'
         },
