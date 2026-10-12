@@ -136,6 +136,8 @@ class Accounts(unittest.TestCase):
             self.assertEqual(good['account_status'],'verified')
             self.assertEqual(good['credential_status'],'ready', 'local eligibility is independent of a successful quota check')
             self.assertEqual(good['grant_states']['revoked'],1)
+            # Exercise a new vendor attempt, not the intentional 60-second result cache.
+            (Path(d) / f"codex_result.{account['key']}.json").unlink(missing_ok=True)
             with patch.object(rw,'_fetch_codex_usage',side_effect=httpx.ConnectError('fixture')):
                 failed=rw._codex_pool_fetcher(account)()
             self.assertEqual(failed['account_status'],'unknown')
@@ -186,6 +188,8 @@ class Accounts(unittest.TestCase):
         with patch.object(rw,'_codex_pool_entries',return_value=rows),patch.object(rw,'_read_codex_cli_auth',return_value=None):
             account=rw._codex_pool_accounts()[0]
         for code,body,expected in [(401,{},'auth_required'),(401,{'error':{'code':'token_revoked'}},'revoked'),(403,{},'forbidden'),(429,{},'rate_limited'),(503,{},'unknown')]:
+            # Each outcome is an independent vendor scenario, not a cached retry.
+            (rw._resetwatch_cache_dir() / f"codex_result.{account['key']}.json").unlink(missing_ok=True)
             error=httpx.HTTPStatusError('fixture',request=httpx.Request('GET','https://test.invalid'),response=httpx.Response(code,json=body))
             with patch.object(rw,'_fetch_codex_usage',side_effect=error):
                 snapshot=rw._codex_pool_fetcher(account)()
