@@ -76,6 +76,41 @@ class Accounts(unittest.TestCase):
         self.assertEqual(cached[0]['fetched_at'], snap['fetched_at'])
         self.assertTrue(cached[0]['cache_hit'])
 
+    def test_reset_balances_are_structured_exact_and_preserved_in_cache(self):
+        import httpx
+        for available, applicable in [(0, 0), (1, 0), (2, 2), (5, 3), (5, None)]:
+            with self.subTest(available=available, applicable=applicable):
+                credits = {'available_count': available}
+                if applicable is not None:
+                    credits['applicable_available_count'] = applicable
+                payload = {'rate_limit': {'allowed': True}, 'rate_limit_reset_credits': credits}
+                response = httpx.Response(200, json=payload, request=httpx.Request('GET', 'https://fixture.invalid/usage'))
+                with patch.object(httpx.Client, 'get', return_value=response) as get:
+                    snap = rw._fetch_codex_usage('synthetic-access', account_key='synthetic-key')
+                self.assertEqual(get.call_count, 1, 'metadata uses the existing usage response only')
+                self.assertEqual(snap.get('rate_limit_reset_credits'), {
+                    'available_count': available, 'applicable_available_count': applicable})
+                if available:
+                    plural = 's' if available != 1 else ''
+                    self.assertIn(f'You have {available} reset{plural} banked', snap['details'])
+                rw._store_probe_result_cache([snap], cli_only=True)
+                cached = rw._read_probe_result_cache(cli_only=True)[0]
+                self.assertEqual(cached['rate_limit_reset_credits'], snap['rate_limit_reset_credits'])
+                self.assertEqual(cached['fetched_at'], snap['fetched_at'])
+                self.assertTrue(cached['cache_hit'])
+
+    def test_reset_balances_missing_or_invalid_are_unknown_not_zero(self):
+        import httpx
+        for credits in [None, {}, {'available_count': True, 'applicable_available_count': -1},
+                        {'available_count': 1.5, 'applicable_available_count': '2'}]:
+            with self.subTest(credits=credits):
+                payload = {'rate_limit': {'allowed': True}, 'rate_limit_reset_credits': credits}
+                response = httpx.Response(200, json=payload, request=httpx.Request('GET', 'https://fixture.invalid/usage'))
+                with patch.object(httpx.Client, 'get', return_value=response):
+                    snap = rw._fetch_codex_usage('synthetic-access')
+                self.assertEqual(snap.get('rate_limit_reset_credits'), {
+                    'available_count': None, 'applicable_available_count': None})
+
     def test_collection_checks_one_group_once_and_keeps_invalid(self):
         rows = [{'id':'healthy','access_token':jwt('one')}, {'id':'dead','account_id':'two','last_status':'dead'}, {'id':'missing','account_id':'three'}]
         loaded = (Path('fixture'), {}, {'access_token': jwt('one', time.time()+1000), 'account_id':'one'})
@@ -94,6 +129,7 @@ class Accounts(unittest.TestCase):
         forbidden = httpx.HTTPStatusError('fixture',request=httpx.Request('GET','https://test.invalid'),response=httpx.Response(401,json={'error':{'code':'token_revoked'}}))
         with tempfile.TemporaryDirectory() as d, patch.object(rw,'_resetwatch_cache_dir',return_value=Path(d)):
             fresh=rw._snapshot('openai-codex','Plus',[rw._win('Session',10)],account_key=account['key'])
+            fresh['rate_limit_reset_credits'] = {'available_count': 5, 'applicable_available_count': 2}
             with patch.object(rw,'_fetch_codex_usage',side_effect=[forbidden,fresh]) as fetch:
                 good=rw._codex_pool_fetcher(account)()
             self.assertEqual(fetch.call_count,2)
@@ -104,6 +140,7 @@ class Accounts(unittest.TestCase):
             self.assertEqual(failed['account_status'],'unknown')
             self.assertEqual(failed['fetched_at'],good['fetched_at'], 'failed check must not overwrite last successful observation')
             self.assertEqual(failed['windows'],good['windows'])
+            self.assertEqual(failed.get('rate_limit_reset_credits'), good['rate_limit_reset_credits'], 'failed attempt retains the last observed reset counts with its original timestamp')
             self.assertTrue(failed['cache_hit'])
 
     def test_openrouter_uses_readonly_credentials_not_runtime_resolver(self):

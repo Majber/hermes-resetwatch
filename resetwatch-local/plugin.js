@@ -67,6 +67,37 @@ const $now = atom(Date.now())
 const $missingState = atom(null)
 const $providerPreferences = atom({ disabled: [], order: [] })
 const $displayMode = atom('remaining')
+const $accountAliases = atom({})
+const ALIAS_STORAGE_KEY = 'account_aliases'
+const ALIAS_MAX_LENGTH = 80
+
+function normalizeAccountAliases(raw) {
+  return Object.fromEntries(Object.entries(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {})
+    .filter(([key, value]) => key && typeof value === 'string' && value.trim())
+    .map(([key, value]) => [key, value.trim().slice(0, ALIAS_MAX_LENGTH)]))
+}
+
+function loadAccountAliases() {
+  try { $accountAliases.set(normalizeAccountAliases(stored(ALIAS_STORAGE_KEY, {}))) }
+  catch { $accountAliases.set({}) }
+}
+
+function saveAccountAlias(accountKey, value) {
+  if (!storage || !accountKey) return false
+  const alias = String(value || '').trim().slice(0, ALIAS_MAX_LENGTH)
+  try {
+    // Read the current namespace, not a render closure; preserve other accounts.
+    const next = normalizeAccountAliases(storage.get(ALIAS_STORAGE_KEY, {}))
+    if (alias) next[accountKey] = alias
+    else delete next[accountKey]
+    storage.set(ALIAS_STORAGE_KEY, next)
+    // The SDK's best-effort set can silently fail. Confirm before updating UI.
+    const saved = storage.get(ALIAS_STORAGE_KEY, null)
+    if (!saved || JSON.stringify(saved) !== JSON.stringify(next)) return false
+    $accountAliases.set(next)
+    return true
+  } catch { return false }
+}
 
 function stored(key, fallback) {
   return storage ? storage.get(key, fallback) : fallback
@@ -527,6 +558,12 @@ const LOCAL_TEXT = {
     check: 'Check status / Refresh usage', refreshing: 'Checking…', cooldown: 'Wait a minute between read-only checks',
     account: 'Account / status', session: 'Session', weekly: 'Weekly', observation: 'Last observation',
     details: 'Details', closeDetails: 'Hide details', noObservation: 'No observation', historicalShort: 'hist.',
+    bankedResets: 'Banked', usableResets: 'usable now', bankedResetsHelp: 'Vendor-reported banked and applicable reset counts at the last observation. ? means unknown; 0 usable does not mean the banked reset is lost. No reason for eligibility is inferred, and no reset is applied here.',
+    localAlias: 'Local alias', saveAlias: 'Save alias', clearAlias: 'Clear alias',
+    aliasHelp: 'Only on this device. Leave empty to restore the original label.',
+    aliasSaved: 'Alias saved locally', aliasCleared: 'Original label restored',
+    aliasError: 'Could not save the alias locally. The saved label has not changed.',
+    aliasUnavailable: 'A stable account identity is unavailable; a local alias cannot be saved.',
     remainingMode: 'Remaining %', usedMode: 'Used %', displayMode: 'Quota display mode',
     resetPending: 'Reset elapsed · awaiting check', resetIn: 'Reset in', minutesAgo: 'min ago', hoursAgo: 'h ago', daysAgo: 'd ago', justNow: 'just now',
     short_available: 'Available', short_limit_reached: 'Limit reached', short_revoked: 'Sign in again',
@@ -554,6 +591,12 @@ const LOCAL_TEXT = {
     check: 'Sprawdź stan / Odśwież zużycie', refreshing: 'Sprawdzanie…', cooldown: 'Odczekaj minutę między sprawdzeniami tylko do odczytu',
     account: 'Konto / stan', session: 'Sesja', weekly: 'Tydzień', observation: 'Ostatni odczyt',
     details: 'Szczegóły', closeDetails: 'Ukryj szczegóły', noObservation: 'Brak odczytu', historicalShort: 'hist.',
+    bankedResets: 'W zapasie', usableResets: 'do użycia teraz', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
+    localAlias: 'Alias lokalny', saveAlias: 'Zapisz alias', clearAlias: 'Usuń alias',
+    aliasHelp: 'Tylko na tym urządzeniu. Puste pole przywraca oryginalną etykietę.',
+    aliasSaved: 'Alias zapisany lokalnie', aliasCleared: 'Przywrócono oryginalną etykietę',
+    aliasError: 'Nie udało się zapisać aliasu lokalnie. Zapisana etykieta nie zmieniła się.',
+    aliasUnavailable: 'Brak stabilnej tożsamości konta; nie można zapisać lokalnego aliasu.',
     remainingMode: 'Pozostało %', usedMode: 'Zużyto %', displayMode: 'Sposób wyświetlania limitu',
     resetPending: 'Reset minął · do sprawdzenia', resetIn: 'Reset za', minutesAgo: 'min temu', hoursAgo: 'godz. temu', daysAgo: 'dni temu', justNow: 'przed chwilą',
     short_available: 'Dostępne', short_limit_reached: 'Limit osiągnięty', short_revoked: 'Zaloguj się ponownie',
@@ -1213,6 +1256,7 @@ function AccountStatusCard({ snap, nowMs }) {
       snap.last_attempt_at ? jsx('span', { children: `${t('attempted')}: ${stamp(snap.last_attempt_at)}` }) : null,
       snap.inspected_at ? jsx('span', { children: `${t('inspected')}: ${stamp(snap.inspected_at)}` }) : null,
       jsx('span', { children: `${t('grants')}: ${snap.grant_count || 1} · ${Object.entries(snap.grant_states || {}).map(([key, count]) => `${key}: ${count}`).join(' · ')}` }),
+      bankedResetCount(snap) > 0 ? jsx('span', { style: { color: text.tertiary }, children: `${resetBalanceLabel(snap, t, !!snap.cache_hit || !['available', 'limit_reached'].includes(state))} · ${t('bankedResetsHelp')}` }) : null,
       state !== 'available' && state !== 'limit_reached' ? jsx('span', { style: { color: text.tertiary }, children: t('guidance') }) : null
     ]
   })
@@ -1242,6 +1286,28 @@ function compactObservation(value, nowMs, t) {
   return `${Math.floor(minutes / 1440)} ${t('daysAgo')}`
 }
 
+function bankedResetCount(snap) {
+  if (snap.rate_limit_reset_credits && typeof snap.rate_limit_reset_credits === 'object') {
+    const count = snap.rate_limit_reset_credits.available_count
+    return Number.isSafeInteger(count) && count >= 0 ? count : null
+  }
+  // probe.py emits this exact vendor-derived detail from available_count.
+  // Missing/invalid metadata is unknown, not zero; do not infer from quotas.
+  for (const detail of snap.details || []) {
+    const match = String(detail).match(/^You have (\d+) resets? banked$/)
+    if (!match) continue
+    const count = Number(match[1])
+    if (Number.isSafeInteger(count) && count >= 0) return count
+  }
+  return null
+}
+
+function resetBalanceLabel(snap, t, historical) {
+  const applicable = snap.rate_limit_reset_credits && snap.rate_limit_reset_credits.applicable_available_count
+  const usable = Number.isSafeInteger(applicable) && applicable >= 0 ? applicable : '?'
+  return `${t('bankedResets')}: ${bankedResetCount(snap)} · ${t('usableResets')}: ${usable}${historical ? ` · ${t('historicalShort')}` : ''}`
+}
+
 function OverviewQuota({ snap, label, state, nowMs }) {
   const t = useLocalText()
   const mode = useValue($displayMode)
@@ -1250,19 +1316,63 @@ function OverviewQuota({ snap, label, state, nowMs }) {
   const percent = quotaPercent(card, mode)
   const remaining = quotaPercent(card, 'remaining')
   const historical = !['available', 'limit_reached'].includes(state)
+  const banked = label === 'Weekly' ? bankedResetCount(snap) : null
   return jsxs('td', { style: overviewCellStyle, children: [
     jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', lineHeight: '18px' }, children: [
       jsx('strong', { style: { minWidth: 36, color: toneColor(toneForRemaining(remaining)) }, children: percent === null ? '—' : `${percent}%` }),
       percent === null ? null : jsx(UsageBar, { remaining, percent, label: `${t(label === 'Session' ? 'session' : 'weekly')}: ${percent}% ${t(mode === 'used' ? 'usedMode' : 'remainingMode')}` }),
       historical && percent !== null ? jsx('span', { title: t('history'), style: { fontSize: '0.625rem', color: text.tertiary }, children: t('historicalShort') }) : null
     ] }),
-    jsx('div', { style: { color: text.tertiary, fontSize: '0.6875rem', whiteSpace: 'nowrap', lineHeight: '16px' }, children: window ? compactReset(window.reset_at, nowMs, t) : '—' })
+    jsxs('div', { style: { color: text.tertiary, fontSize: '0.6875rem', whiteSpace: 'nowrap', lineHeight: '16px' }, children: [
+      window ? compactReset(window.reset_at, nowMs, t) : '—',
+      banked > 0 ? jsx('span', { 'data-banked-resets': banked,
+        title: `${t('bankedResetsHelp')} · ${t('observed')}: ${observedMillis(snap.fetched_at) ? new Date(observedMillis(snap.fetched_at)).toLocaleString() : t('never')}`,
+        style: { marginLeft: 6, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '0 4px', fontSize: '0.625rem' },
+        children: resetBalanceLabel(snap, t, historical || !!snap.cache_hit) }) : null
+    ] })
   ] })
 }
 
-function AccountOverviewRow({ snap, nowMs }) {
+function AccountAliasEditor({ accountKey, alias }) {
+  const t = useLocalText()
+  const [draft, setDraft] = useState(alias)
+  const [message, setMessage] = useState('')
+  const [failed, setFailed] = useState(false)
+  useEffect(() => { setDraft(alias); setMessage(''); setFailed(false) }, [accountKey, alias])
+  const save = value => {
+    const ok = saveAccountAlias(accountKey, value)
+    setFailed(!ok)
+    if (ok) setDraft(String(value || '').trim().slice(0, ALIAS_MAX_LENGTH))
+    setMessage(ok ? String(value || '').trim() ? 'aliasSaved' : 'aliasCleared' : 'aliasError')
+  }
+  if (!accountKey) return jsx('span', { style: { color: text.tertiary, fontSize: '0.6875rem' }, children: t('aliasUnavailable') })
+  return jsxs('form', {
+    onSubmit: event => { event.preventDefault(); save(draft) },
+    style: { display: 'flex', flexDirection: 'column', gap: 4 }, children: [
+      jsxs('div', { style: { display: 'flex', alignItems: 'end', gap: 6, flexWrap: 'wrap', maxWidth: 440 }, children: [
+        jsx(Field, { label: t('localAlias'), children: jsx('input', {
+          type: 'text', value: draft, maxLength: ALIAS_MAX_LENGTH,
+          onChange: event => { setDraft(event.target.value); setMessage(''); setFailed(false) },
+          style: { height: 28, minWidth: 140, width: '100%', boxSizing: 'border-box', padding: '0 8px', borderRadius: 6,
+            border: '1px solid var(--ui-stroke-secondary)', background: 'transparent', color: text.primary, fontSize: '0.8125rem' }
+        }) }),
+        jsx('button', { type: 'submit', style: { fontSize: '0.6875rem', padding: '4px 8px', borderRadius: 4,
+          border: '1px solid var(--ui-stroke-secondary)', background: 'transparent', color: text.secondary, cursor: 'pointer' }, children: t('saveAlias') }),
+        jsx(SmallButton, { disabled: !alias && !draft, onClick: () => save(''), children: t('clearAlias') })
+      ] }),
+      jsx('span', { style: { color: text.tertiary, fontSize: '0.6875rem' }, children: t('aliasHelp') }),
+      message ? jsx('span', { role: failed ? 'alert' : 'status', style: { color: failed ? text.red : text.tertiary, fontSize: '0.6875rem' }, children: t(message) }) : null
+    ]
+  })
+}
+
+function AccountOverviewRow({ snap, nowMs, accountKey }) {
   const t = useLocalText()
   const [expanded, setExpanded] = useState(false)
+  const aliases = useValue($accountAliases)
+  // Never bind an alias to a masked-label fallback or an unscoped unknown.
+  const aliasKey = String(snap.account_key || '').trim() ? accountKey : ''
+  const alias = aliasKey && aliases[aliasKey] || ''
   const { state } = deriveAccountStatus(snap, nowMs)
   const key = snapshotAccountKey(snap)
   const detailId = `resetwatch-local-details-${encodeURIComponent(key)}`
@@ -1270,7 +1380,7 @@ function AccountOverviewRow({ snap, nowMs }) {
     jsxs('tr', { 'data-account-row': key || 'unknown', 'data-account-status': state, children: [
       jsxs('td', { style: overviewCellStyle, children: [
         jsxs('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap', lineHeight: '18px' }, children: [
-          jsx('strong', { children: snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
+          jsx('strong', { title: alias || undefined, style: { maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }, children: alias || snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
           jsx('span', { style: { color: text.tertiary, fontSize: '0.625rem' }, children: key.slice(0, 8) })
         ] }),
         jsx('div', { title: t(state), style: { fontSize: '0.6875rem', lineHeight: '16px', whiteSpace: 'nowrap', color: ['revoked', 'limit_reached'].includes(state) ? text.red : state === 'available' ? text.green : text.secondary }, children: t(`short_${state}`) })
@@ -1287,6 +1397,7 @@ function AccountOverviewRow({ snap, nowMs }) {
     ] }),
     expanded ? jsx('tr', { id: detailId, 'data-account-details': key || 'unknown', children: jsx('td', { colSpan: 4, style: { ...overviewCellStyle, padding: 10 }, children: jsxs('div', {
       style: { display: 'flex', flexDirection: 'column', gap: 6, whiteSpace: 'normal' }, children: [
+        jsx(AccountAliasEditor, { accountKey: aliasKey, alias }),
         jsx(AccountStatusCard, { snap, nowMs }),
         ...(snap.details || []).map((detail, index) => jsx('div', { style: { color: text.tertiary, fontSize: '0.75rem', overflowWrap: 'anywhere' }, children: detail }, index)),
         (snap.windows || []).length ? jsx('div', { style: { overflowX: 'auto' }, children: jsxs('table', {
@@ -1314,7 +1425,7 @@ function AccountOverviewTable({ accounts, nowMs }) {
       jsx('thead', { children: jsx('tr', { children: ['account', 'session', 'weekly', 'observation'].map(label => jsx('th', {
         scope: 'col', style: { ...overviewCellStyle, padding: '5px 10px', color: text.tertiary, fontWeight: 500, whiteSpace: 'nowrap' }, children: t(label)
       }, label)) }) }),
-      jsx('tbody', { children: [...accounts].map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs }, key)) })
+      jsx('tbody', { children: [...accounts].map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key }, key)) })
     ]
   }) })
 }
@@ -1875,6 +1986,7 @@ export default {
     os = ctx.os || null
     if (ctx.i18n && typeof ctx.i18n.register === 'function') ctx.i18n.register(LOCAL_TEXT)
     loadClocks()
+    loadAccountAliases()
     $providerPreferences.set(normalizeProviderPreferences(stored('providers', {})))
     $displayMode.set(normalizeDisplayMode(stored('display_mode', 'remaining')))
 

@@ -2014,10 +2014,17 @@ def _fetch_codex_usage(
         return None
     windows = _codex_windows_from_payload(payload)
     details: list[str] = []
-    reset_credits = payload.get("rate_limit_reset_credits") if isinstance(payload.get("rate_limit_reset_credits"), dict) else {}
-    banked = reset_credits.get("available_count")
-    if isinstance(banked, (int, float)) and int(banked) > 0:
-        count = int(banked)
+    raw_reset_credits = payload.get("rate_limit_reset_credits")
+    reset_credits: dict = raw_reset_credits if isinstance(raw_reset_credits, dict) else {}
+    # Preserve both vendor counts from this response, without inferring eligibility.
+    # Missing, boolean, negative, or fractional values remain unknown, not zero.
+    reset_counts = {
+        key: value if isinstance(value := reset_credits.get(key), int) and not isinstance(value, bool) and value >= 0 else None
+        for key in ("available_count", "applicable_available_count")
+    }
+    banked = reset_counts["available_count"]
+    if banked is not None and banked > 0:
+        count = banked
         plural = "s" if count != 1 else ""
         details.append(f"You have {count} reset{plural} banked")
     credits = payload.get("credits") if isinstance(payload.get("credits"), dict) else {}
@@ -2040,6 +2047,7 @@ def _fetch_codex_usage(
         account_key=account_key,
     )
     snap["fetched_at"] = observed_at
+    snap["rate_limit_reset_credits"] = reset_counts
     snap["allowed"] = limits.get("allowed") if isinstance(limits.get("allowed"), bool) else None
     snap["limit_reached"] = limits.get("limit_reached") if isinstance(limits.get("limit_reached"), bool) else None
     main_windows = _codex_windows_from_rate_limit(limits)
@@ -2202,7 +2210,7 @@ def _codex_pool_fetcher(account: dict):
             if isinstance(previous, dict) and previous.get("account_key") == account["key"]:
                 observed_at = _finite_number(previous.get("fetched_at"))
                 if observed_at is not None and 0 <= time.time() - observed_at <= 24 * 3600:
-                    for key in ("windows", "plan", "fetched_at", "quota_state", "allowed", "limit_reached"):
+                    for key in ("windows", "plan", "fetched_at", "quota_state", "allowed", "limit_reached", "rate_limit_reset_credits"):
                         snap[key] = previous.get(key)
                     snap["cache_hit"] = True
         snap.update({
