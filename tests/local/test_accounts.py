@@ -134,10 +134,12 @@ class Accounts(unittest.TestCase):
                 good=rw._codex_pool_fetcher(account)()
             self.assertEqual(fetch.call_count,2)
             self.assertEqual(good['account_status'],'verified')
+            self.assertEqual(good['credential_status'],'ready', 'local eligibility is independent of a successful quota check')
             self.assertEqual(good['grant_states']['revoked'],1)
             with patch.object(rw,'_fetch_codex_usage',side_effect=httpx.ConnectError('fixture')):
                 failed=rw._codex_pool_fetcher(account)()
             self.assertEqual(failed['account_status'],'unknown')
+            self.assertEqual(failed['credential_status'],'ready', 'network failure must not rewrite local credential health')
             self.assertEqual(failed['fetched_at'],good['fetched_at'], 'failed check must not overwrite last successful observation')
             self.assertEqual(failed['windows'],good['windows'])
             self.assertEqual(failed.get('rate_limit_reset_credits'), good['rate_limit_reset_credits'], 'failed attempt retains the last observed reset counts with its original timestamp')
@@ -188,6 +190,7 @@ class Accounts(unittest.TestCase):
             with patch.object(rw,'_fetch_codex_usage',side_effect=error):
                 snapshot=rw._codex_pool_fetcher(account)()
             self.assertEqual(snapshot['account_status'],expected)
+            self.assertEqual(snapshot['credential_status'], 'ready', 'HTTP status is not a local token-expiry observation')
             self.assertIsNone(snapshot['fetched_at'])
 
     def test_roster_change_invalidates_cache(self):

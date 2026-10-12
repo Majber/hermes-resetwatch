@@ -70,6 +70,87 @@ const $displayMode = atom('remaining')
 const $accountAliases = atom({})
 const ALIAS_STORAGE_KEY = 'account_aliases'
 const ALIAS_MAX_LENGTH = 80
+const ACCOUNT_SORT_STORAGE_KEY = 'account_sort'
+const ACCOUNT_SORT_KEYS = ['default', 'session', 'weekly', 'reset', 'state']
+const $accountSortPreferences = atom({})
+
+function normalizeAccountSort(raw) {
+  const key = ACCOUNT_SORT_KEYS.includes(raw && raw.key) ? raw.key : 'default'
+  return { key, direction: raw && ['asc', 'desc'].includes(raw.direction) ? raw.direction : ['session', 'weekly'].includes(key) ? 'desc' : 'asc' }
+}
+
+function accountSortScope(connectionId, profile) {
+  return JSON.stringify([connectionId, profile || 'default'])
+}
+
+function accountSortFor(connectionId, profile) {
+  return normalizeAccountSort($accountSortPreferences.get()[accountSortScope(connectionId, profile)])
+}
+
+function loadAccountSortPreferences() {
+  try {
+    const raw = stored(ACCOUNT_SORT_STORAGE_KEY, {})
+    $accountSortPreferences.set(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {})
+  } catch { $accountSortPreferences.set({}) }
+}
+
+function saveAccountSort(connectionId, profile, value) {
+  if (!storage || connectionId === null) return false
+  try {
+    const raw = storage.get(ACCOUNT_SORT_STORAGE_KEY, {})
+    const next = { ...(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}),
+      [accountSortScope(connectionId, profile)]: normalizeAccountSort(value) }
+    storage.set(ACCOUNT_SORT_STORAGE_KEY, next)
+    const saved = storage.get(ACCOUNT_SORT_STORAGE_KEY, null)
+    if (JSON.stringify(saved) !== JSON.stringify(next)) return false
+    $accountSortPreferences.set(next)
+    return true
+  } catch { return false }
+}
+
+function sortAccounts(accounts, selected, nowMs) {
+  const { key, direction } = normalizeAccountSort(selected)
+  const entries = [...accounts]
+  if (key === 'default') return entries
+  const stateRank = { available: 0, limit_reached: 1, pending: 2, stale: 3, historical: 4, unknown: 5 }
+  const value = snap => {
+    const status = deriveAccountStatus(snap, nowMs)
+    if (key === 'state') return stateRank[status.freshness === 'fresh' ? status.availability : status.freshness] ?? 5
+    // Historical or unknown observations cannot rank as live remaining quota/reset.
+    if (status.historical) return null
+    const windows = mainQuotaWindows(snap)
+    if (key === 'reset') {
+      const future = windows.map(window => Date.parse(window.reset_at)).filter(ms => Number.isFinite(ms) && ms > nowMs)
+      return future.length ? Math.min(...future) : null
+    }
+    const window = windows.find(item => String(item.label).toLowerCase() === (key === 'session' ? 'session' : 'weekly'))
+    return window ? quotaPercent({ remaining: window.remaining_percent, used: window.used_percent }, 'remaining') : null
+  }
+  return entries.map((entry, index) => ({ entry, index, value: value(entry[1].snap) }))
+    .sort((a, b) => a.value === null && b.value !== null ? 1 : b.value === null && a.value !== null ? -1
+      : a.value === b.value ? a.index - b.index : (a.value - b.value) * (direction === 'desc' ? -1 : 1))
+    .map(item => item.entry)
+}
+
+function AccountSortControls({ connectionId, profile }) {
+  const t = useLocalText()
+  useValue($accountSortPreferences)
+  const selected = accountSortFor(connectionId, profile)
+  const [failed, setFailed] = useState(false)
+  const save = next => setFailed(!saveAccountSort(connectionId, profile, next))
+  return jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 4 }, children: [
+    jsxs('select', { 'aria-label': t('sortAccounts'), title: t('sortHelp'), value: selected.key,
+      disabled: connectionId === null,
+      onChange: event => save(normalizeAccountSort({ key: event.target.value })),
+      style: { fontSize: '0.6875rem', color: text.secondary, background: 'var(--ui-bg-primary)',
+        border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '2px 6px' },
+      children: ACCOUNT_SORT_KEYS.map(key => jsx('option', { value: key, children: t(`sort_${key}`) }, key)) }),
+    jsx(SmallButton, { disabled: connectionId === null || selected.key === 'default', title: t(selected.direction === 'asc' ? 'ascending' : 'descending'),
+      onClick: () => { const current = accountSortFor(connectionId, profile); save({ ...current, direction: current.direction === 'asc' ? 'desc' : 'asc' }) },
+      children: selected.direction === 'asc' ? '↑' : '↓' }),
+    failed ? jsx('span', { role: 'alert', title: t('sortError'), style: { fontSize: '0.6875rem', color: text.red }, children: t('sortError') }) : null
+  ] })
+}
 
 function normalizeAccountAliases(raw) {
   return Object.fromEntries(Object.entries(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {})
@@ -528,23 +609,40 @@ function observedMillis(value) {
   return Number.isFinite(stamp) && stamp > 0 ? stamp : null
 }
 
+function mainQuotaWindows(snap) {
+  return (snap.windows || []).filter(window => providerKey(snap.provider) !== 'openai-codex' || /^(Session|Weekly)$/i.test(window.label))
+}
+
 function deriveAccountStatus(snap, nowMs) {
-  const auth = snap.account_status || (snap.error ? 'unknown' : 'verified')
-  if (auth !== 'verified') return { state: auth, tightest: null }
+  // Auth describes the last check/local inspection, never quota age or inference.
+  const local = snap.credential_status
+  const auth = ['expired', 'missing', 'revoked'].includes(local) ? local : snap.account_status || 'unknown'
   const observedAt = observedMillis(snap.fetched_at)
-  const windows = (snap.windows || []).filter(window => providerKey(snap.provider) !== 'openai-codex' || /^(Session|Weekly)$/i.test(window.label))
+  const windows = mainQuotaWindows(snap)
   const tightest = windows.filter(window => clampPercent(window.used_percent) !== null)
     .sort((a, b) => Number(b.used_percent) - Number(a.used_percent))[0] || null
-  if (windows.some(window => window.reset_at && Date.parse(window.reset_at) <= nowMs)) return { state: 'pending', tightest }
-  if (!observedAt || observedAt > nowMs + 60000) return { state: 'unknown', tightest }
-  if (nowMs - observedAt > POLL_MS + REFRESH_COOLDOWN_MS) return { state: 'stale', tightest }
-  const limited = snap.quota_state === 'limit_reached' || snap.limit_reached === true || windows.some(window => Number(window.used_percent) >= 100)
-  if (limited) return { state: 'limit_reached', tightest }
-  return { state: snap.allowed === true || snap.quota_state === 'available' ? 'available' : 'unknown', tightest }
+  let freshness = 'fresh'
+  if (!observedAt || observedAt > nowMs + 60000) freshness = 'unknown'
+  else if (windows.some(window => window.reset_at && Date.parse(window.reset_at) <= nowMs)) freshness = 'pending'
+  else if (nowMs - observedAt > POLL_MS + REFRESH_COOLDOWN_MS) freshness = 'stale'
+  else if (auth !== 'verified' || snap.error) freshness = 'historical'
+  const limited = snap.quota_state === 'limit_reached' || snap.limit_reached === true || windows.some(window => quotaPercent({ remaining: window.remaining_percent, used: window.used_percent }, 'remaining') === 0)
+  const availability = freshness !== 'fresh' ? 'unknown' : limited ? 'limit_reached'
+    : snap.allowed === true || snap.quota_state === 'available' ? 'available' : 'unknown'
+  // Keep the legacy composite state for existing historical-card consumers.
+  const state = auth !== 'verified' ? auth : freshness === 'fresh' ? availability : freshness === 'historical' ? 'unknown' : freshness
+  return { state, auth, freshness, availability, historical: freshness !== 'fresh' || availability === 'unknown', tightest }
 }
 
 const LOCAL_TEXT = {
   en: {
+    authLabel: 'Auth', quotaLabel: 'Quota', short_verified: 'API accepted',
+    authHelp: 'Last usage API authentication or local credential inspection, not an inference check or a guarantee of current sign-in. Expired access tokens do not establish an invalid refresh grant.',
+    fresh: 'Fresh', historical: 'Historical', short_fresh: 'Fresh', short_historical: 'Historical',
+    freshnessHelp: 'Quota observation freshness is independent of authentication. Historical or unknown quota is not live availability. Fresh means observed within 6 minutes and no main reset has elapsed; cache reuse does not renew the timestamp.',
+    sortAccounts: 'Sort accounts', sort_default: 'Original order', sort_session: 'Session remaining', sort_weekly: 'Weekly remaining', sort_reset: 'Nearest reset', sort_state: 'State',
+    ascending: 'Ascending', descending: 'Descending', sortError: 'Sort not saved',
+    sortHelp: 'Local only. Remaining sorts always use remaining %, even in Used mode. For remaining/reset sorts, historical/unknown values are last in either direction. Reset uses future main Session/Weekly timestamps from live observations. State ascending: available, limit reached, awaiting check, stale, historical, unknown; descending reverses these states. Ties retain source order; Original order preserves provider/source ordering. Saved per connection and profile.',
     available: 'Available — usage API verified', limit_reached: 'Usage limit reached',
     revoked: 'Sign in again — invalid saved grant', expired: 'Expired / expiring token — not checked',
     missing: 'Missing access token — not checked', auth_required: 'Authentication failed — renewal may help',
@@ -578,6 +676,13 @@ const LOCAL_TEXT = {
     manualHeading: 'Manual clocks', addClock: 'Add clock', close: 'Close'
   },
   pl: {
+    authLabel: 'Logowanie', quotaLabel: 'Limity', short_verified: 'API zaakceptowało',
+    authHelp: 'Ostatnie uwierzytelnienie w API zużycia lub lokalna kontrola danych logowania, nie test generowania ani gwarancja aktualnego logowania. Wygaśnięcie tokenu dostępu nie dowodzi nieważności uprawnienia do odświeżania.',
+    fresh: 'Aktualny odczyt', historical: 'Historyczny', short_fresh: 'Aktualne', short_historical: 'Historyczne',
+    freshnessHelp: 'Aktualność odczytu limitów jest niezależna od logowania. Historyczne lub nieznane limity nie oznaczają bieżącej dostępności. Aktualny odczyt ma do 6 minut i żaden główny reset nie minął; pamięć podręczna nie odnawia czasu odczytu.',
+    sortAccounts: 'Sortowanie kont', sort_default: 'Kolejność źródłowa', sort_session: 'Pozostało w sesji', sort_weekly: 'Pozostało w tygodniu', sort_reset: 'Najbliższy reset', sort_state: 'Stan',
+    ascending: 'Rosnąco', descending: 'Malejąco', sortError: 'Nie zapisano sortowania',
+    sortHelp: 'Tylko lokalnie. Sortowanie według pozostałego % także w trybie Zużyto. Przy sortowaniu limitów/resetów wartości historyczne i nieznane zawsze na końcu. Reset: przyszłe daty głównych okien Sesja/Tydzień z aktualnych odczytów. Stan rosnąco: dostępne, limit osiągnięty, oczekuje, nieaktualne, historyczne, nieznane; malejąco odwraca tę kolejność. Remisy zachowują kolejność źródła; kolejność źródłowa zachowuje kolejność dostawców. Zapis osobno dla połączenia i profilu.',
     available: 'Dostępne — potwierdzone przez API zużycia', limit_reached: 'Osiągnięto limit zużycia',
     revoked: 'Zaloguj się ponownie — nieważne zapisane uprawnienie', expired: 'Token wygasł / zaraz wygaśnie — bez sprawdzenia',
     missing: 'Brak tokenu dostępu — bez sprawdzenia', auth_required: 'Błąd uwierzytelnienia — odnowienie może pomóc',
@@ -1241,7 +1346,7 @@ function SectionHeader({ title, open, onToggle, extra }) {
 
 function AccountStatusCard({ snap, nowMs }) {
   const t = useLocalText()
-  const { state, tightest } = deriveAccountStatus(snap, nowMs)
+  const { state, auth, freshness, availability, historical, tightest } = deriveAccountStatus(snap, nowMs)
   const observedAt = observedMillis(snap.fetched_at)
   const stamp = value => { const ms = observedMillis(value); return ms ? new Date(ms).toLocaleString() : '—' }
   return jsxs('div', {
@@ -1249,8 +1354,9 @@ function AccountStatusCard({ snap, nowMs }) {
     style: { padding: '10px 14px', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 10, fontSize: '0.75rem', display: 'flex', flexDirection: 'column', gap: 5 },
     children: [
       jsx('strong', { children: snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
-      jsx('span', { style: { color: ['revoked', 'limit_reached'].includes(state) ? text.red : ['available'].includes(state) ? text.green : text.secondary }, children: t(state) }),
-      tightest ? jsx('span', { children: `${tightest.label}: ${clampPercent(tightest.used_percent)}% used${['pending', 'stale', 'unknown'].includes(state) ? ` · ${t('history')}` : ''}${tightest.reset_at ? ` · ${formatReset(tightest.reset_at, '', nowMs)}` : ''}` }) : null,
+      jsx('span', { 'data-auth-health': auth, title: t('authHelp'), style: { color: auth === 'revoked' ? text.red : text.secondary }, children: `${t('authLabel')}: ${t(`short_${auth}`)}` }),
+      jsx('span', { 'data-quota-freshness': freshness, title: t('freshnessHelp'), children: `${t('quotaLabel')}: ${t(`short_${freshness}`)}${freshness === 'fresh' ? ` · ${t(`short_${availability}`)}` : ''}` }),
+      tightest ? jsx('span', { children: `${tightest.label}: ${clampPercent(tightest.used_percent)}% used${historical ? ` · ${t('history')}` : ''}${tightest.reset_at ? ` · ${formatReset(tightest.reset_at, '', nowMs)}` : ''}` }) : null,
       jsx('span', { style: { color: text.tertiary }, children: `${snap.source_host || ''} · ID ${snapshotAccountKey(snap).slice(0, 10)} · ${snap.plan || ''}` }),
       jsx('span', { children: `${observedAt ? `${t('observed')}: ${stamp(snap.fetched_at)}` : t('never')}${snap.cache_hit ? ` · ${t('cached')}` : ''}` }),
       snap.last_attempt_at ? jsx('span', { children: `${t('attempted')}: ${stamp(snap.last_attempt_at)}` }) : null,
@@ -1373,7 +1479,7 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
   // Never bind an alias to a masked-label fallback or an unscoped unknown.
   const aliasKey = String(snap.account_key || '').trim() ? accountKey : ''
   const alias = aliasKey && aliases[aliasKey] || ''
-  const { state } = deriveAccountStatus(snap, nowMs)
+  const { state, auth, freshness, availability } = deriveAccountStatus(snap, nowMs)
   const key = snapshotAccountKey(snap)
   const detailId = `resetwatch-local-details-${encodeURIComponent(key)}`
   return jsxs(Fragment, { children: [
@@ -1383,12 +1489,13 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
           jsx('strong', { title: alias || undefined, style: { maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }, children: alias || snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
           jsx('span', { style: { color: text.tertiary, fontSize: '0.625rem' }, children: key.slice(0, 8) })
         ] }),
-        jsx('div', { title: t(state), style: { fontSize: '0.6875rem', lineHeight: '16px', whiteSpace: 'nowrap', color: ['revoked', 'limit_reached'].includes(state) ? text.red : state === 'available' ? text.green : text.secondary }, children: t(`short_${state}`) })
+        jsx('div', { 'data-auth-health': auth, title: t('authHelp'), style: { fontSize: '0.625rem', lineHeight: '16px', whiteSpace: 'nowrap', color: auth === 'revoked' ? text.red : text.secondary }, children: `${t('authLabel')}: ${t(`short_${auth}`)}` })
       ] }),
       jsx(OverviewQuota, { snap, label: 'Session', state, nowMs }),
       jsx(OverviewQuota, { snap, label: 'Weekly', state, nowMs }),
       jsxs('td', { style: overviewCellStyle, children: [
-        jsx('div', { style: { whiteSpace: 'nowrap', color: text.secondary, fontSize: '0.6875rem', lineHeight: '18px' }, children: compactObservation(snap.fetched_at, nowMs, t) }),
+        jsx('div', { 'data-quota-freshness': freshness, title: `${t('freshnessHelp')} · ${compactObservation(snap.fetched_at, nowMs, t)}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '0.625rem', lineHeight: '18px' }, children: `${t('quotaLabel')}: ${t(`short_${freshness}`)}${freshness === 'fresh' ? ` · ${t(`short_${availability}`)}` : ''}` }),
+        jsx('span', { title: t('observed'), style: { color: text.tertiary, fontSize: '0.625rem', marginRight: 6 }, children: compactObservation(snap.fetched_at, nowMs, t) }),
         jsx('button', { type: 'button', 'data-account-toggle': key || 'unknown', 'aria-expanded': expanded, 'aria-controls': detailId,
           onClick: () => setExpanded(value => !value),
           style: { border: 0, background: 'transparent', color: text.accent, padding: 0, cursor: 'pointer', fontSize: '0.6875rem', lineHeight: '16px', whiteSpace: 'nowrap' },
@@ -1418,19 +1525,19 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
   ] })
 }
 
-function AccountOverviewTable({ accounts, nowMs }) {
+function AccountOverviewTable({ accounts, nowMs, accountSort }) {
   const t = useLocalText()
   return jsx('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', minWidth: 0 }, children: jsxs('table', {
     'aria-label': `Codex · ${t('heading')}`, style: { width: '100%', minWidth: 720, borderCollapse: 'collapse', fontSize: '0.75rem', lineHeight: '18px' }, children: [
       jsx('thead', { children: jsx('tr', { children: ['account', 'session', 'weekly', 'observation'].map(label => jsx('th', {
         scope: 'col', style: { ...overviewCellStyle, padding: '5px 10px', color: text.tertiary, fontWeight: 500, whiteSpace: 'nowrap' }, children: t(label)
       }, label)) }) }),
-      jsx('tbody', { children: [...accounts].map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key }, key)) })
+      jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key }, key)) })
     ]
   }) })
 }
 
-function ProviderBlock({ title, cards, nowMs, empty, actionsFor }) {
+function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort }) {
   const [open, toggle] = useSectionOpen(`provider:${title}`)
   const t = useLocalText()
   const accounts = new Map()
@@ -1449,9 +1556,9 @@ function ProviderBlock({ title, cards, nowMs, empty, actionsFor }) {
         : !cards.length
           ? jsx('div', { style: { fontSize: '0.8125rem', color: text.tertiary }, children: empty })
           : accounts.size && [...accounts.values()].every(account => providerKey(account.snap.provider) === 'openai-codex')
-            ? jsx(AccountOverviewTable, { accounts, nowMs })
+            ? jsx(AccountOverviewTable, { accounts, nowMs, accountSort })
             : accounts.size
-            ? [...accounts].map(([key, account]) => jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 }, children: [
+            ? sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 }, children: [
                 jsx(AccountStatusCard, { snap: account.snap, nowMs }),
                 (account.snap.windows || []).length ? jsxs('details', { open: true, children: [
                   jsx('summary', { style: { cursor: 'pointer', color: text.secondary, fontSize: '0.75rem' }, children: t('windows') }),
@@ -1718,6 +1825,8 @@ function PluginPageContent() {
   const preferences = useValue($providerPreferences)
   const displayMode = useValue($displayMode)
   const live = useLiveCards(gateway, sessionId, connectionId, profile, preferences.disabled)
+  useValue($accountSortPreferences)
+  const accountSort = accountSortFor(connectionId, profile)
   const [adding, setAdding] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [liveOpen, toggleLive] = useSectionOpen('live')
@@ -1782,6 +1891,7 @@ function PluginPageContent() {
           jsxs('div', {
             style: { marginLeft: 'auto', display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' },
             children: [
+              jsx(AccountSortControls, { connectionId, profile }, accountSortScope(connectionId, profile)),
               jsxs('select', {
                 'aria-label': t('displayMode'),
                 value: displayMode,
@@ -1853,7 +1963,7 @@ function PluginPageContent() {
                               minWidth: 0
                             },
                             children: groups.map(group =>
-                              jsx(ProviderBlock, { title: group.title, cards: group.cards, nowMs }, group.title)
+                              jsx(ProviderBlock, { title: group.title, cards: group.cards, nowMs, accountSort }, group.title)
                             )
                           })
                         : jsx('div', {
@@ -1987,6 +2097,7 @@ export default {
     if (ctx.i18n && typeof ctx.i18n.register === 'function') ctx.i18n.register(LOCAL_TEXT)
     loadClocks()
     loadAccountAliases()
+    loadAccountSortPreferences()
     $providerPreferences.set(normalizeProviderPreferences(stored('providers', {})))
     $displayMode.set(normalizeDisplayMode(stored('display_mode', 'remaining')))
 

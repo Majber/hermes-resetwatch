@@ -2214,7 +2214,9 @@ def _codex_pool_fetcher(account: dict):
                         snap[key] = previous.get(key)
                     snap["cache_hit"] = True
         snap.update({
-            "account_status": state, "credential_status": state,
+            # Local token eligibility and the latest vendor/auth outcome are
+            # independent. An HTTP/network failure never establishes expiry.
+            "account_status": state, "credential_status": account["credential_status"],
             "grant_states": states, "grant_count": sum(account["grant_states"].values()),
             "source_host": account["source_host"],
             "inspected_at": time.time(), "last_attempt_at": last_attempt_at,
