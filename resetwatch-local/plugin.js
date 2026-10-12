@@ -259,7 +259,7 @@ function toneColor(tone) {
   return text.secondary
 }
 
-function formatReset(resetAt, resetText, nowMs) {
+function formatReset(resetAt, resetText, nowMs, t = localText()) {
   if (resetText) return resetText
   if (!resetAt) return ''
   const date = new Date(resetAt)
@@ -272,15 +272,15 @@ function formatReset(resetAt, resetText, nowMs) {
     hour: 'numeric',
     minute: '2-digit'
   })
-  if (delta <= 0) return `Reset elapsed · awaiting check · ${local}`
+  if (delta <= 0) return `${t('resetPending')} · ${local}`
   const minutes = Math.round(delta / 60000)
-  if (minutes < 1) return `Reset now · ${local}`
-  if (minutes < 60) return `Resets in ${minutes}m · ${local}`
+  if (minutes < 1) return `${t('resetNow')} · ${local}`
+  if (minutes < 60) return `${t('resetIn')} ${minutes} min · ${local}`
   const hours = Math.floor(minutes / 60)
   const rem = minutes % 60
-  if (hours < 24) return `Resets in ${hours}h ${rem}m · ${local}`
+  if (hours < 24) return `${t('resetIn')} ${hours} h ${rem} min · ${local}`
   const days = Math.floor(hours / 24)
-  return `Resets in ${days}d ${hours % 24}h · ${local}`
+  return `${t('resetIn')} ${days} d ${hours % 24} h · ${local}`
 }
 
 function toDatetimeLocal(iso) {
@@ -642,7 +642,8 @@ function deriveAccountStatus(snap, nowMs) {
 
 const LOCAL_TEXT = {
   en: {
-    authLabel: 'Auth', quotaLabel: 'Quota', short_verified: 'API accepted',
+    authLabel: 'Auth', quotaLabel: 'Quota', short_verified: 'Logged in',
+    verified: 'Credentials were accepted by the usage API at the last successful check; this is not a guarantee of current sign-in.',
     authHelp: 'Last usage API authentication or local credential inspection, not an inference check or a guarantee of current sign-in. Expired access tokens do not establish an invalid refresh grant.',
     fresh: 'Fresh', historical: 'Historical', short_fresh: 'Fresh', short_historical: 'Historical',
     freshnessHelp: 'Quota observation freshness is independent of authentication. Historical or unknown quota is not live availability. Fresh means observed within 6 minutes and no main reset has elapsed; cache reuse does not renew the timestamp.',
@@ -662,7 +663,7 @@ const LOCAL_TEXT = {
     check: 'Check status / Refresh usage', refreshing: 'Checking…', cooldown: 'Wait a minute between read-only checks',
     account: 'Account / status', session: 'Session', weekly: 'Weekly', observation: 'Last observation',
     details: 'Details', closeDetails: 'Hide details', noObservation: 'No observation', historicalShort: 'hist.',
-    bankedResets: 'Banked', usableResets: 'usable now', bankedResetsHelp: 'Vendor-reported banked and applicable reset counts at the last observation. ? means unknown; 0 usable does not mean the banked reset is lost. No reason for eligibility is inferred, and no reset is applied here.',
+    bankedResets: 'Resets', usableResets: 'now', bankedResetsHelp: 'Vendor-reported banked and applicable reset counts at the last observation. ? means unknown; 0 usable does not mean the banked reset is lost. No reason for eligibility is inferred, and no reset is applied here.',
     localAlias: 'Local alias', saveAlias: 'Save alias', clearAlias: 'Clear alias',
     aliasHelp: 'Only on this device. Leave empty to restore the original label.',
     aliasSaved: 'Alias saved locally', aliasCleared: 'Original label restored',
@@ -673,16 +674,21 @@ const LOCAL_TEXT = {
     short_available: 'Available', short_limit_reached: 'Limit reached', short_revoked: 'Sign in again',
     short_expired: 'Expired / expiring token', short_missing: 'Missing token', short_auth_required: 'Authentication failed',
     short_forbidden: 'Access denied', short_rate_limited: 'API rate-limited', short_unknown: 'Unknown',
-    short_pending: 'Awaiting check', short_stale: 'Stale observation',
+    short_pending: 'Awaiting check', short_stale: 'Stale', freshness_unknown: 'Unknown freshness', quota_unknown: 'Unknown',
     automatic: 'Automatic observations', helpHeading: 'Help · read-only', providersHeading: 'Providers and order',
     providersHelp: 'Choose which providers to fetch and show. Saved provider choices and ordering are preserved.',
     resetProviders: 'Reset providers', moveUp: 'Move up', moveDown: 'Move down',
     emptyProviders: 'All providers are off. Enable a provider in Providers and order.',
     emptyUsage: 'No observations yet. Check provider settings and sign-in, then refresh.',
-    manualHeading: 'Manual clocks', addClock: 'Add clock', close: 'Close'
+    manualHeading: 'Manual clocks', addClock: 'Add clock', close: 'Close',
+    name: 'Name', planName: 'Plan name', reset: 'Reset', dashboardUrl: 'Dashboard URL (optional)', custom: 'Custom',
+    cancel: 'Cancel', save: 'Save', open: 'Open', edit: 'Edit', remove: 'Remove', unavailable: 'Unavailable',
+    used: 'used', left: 'left', manualNote: 'Typed by you. Update when the vendor page changes.', resetNow: 'Reset now', resets: 'Resets',
+    gateway: 'Gateway', gateway_open: 'connected', gateway_idle: 'idle', gateway_closed: 'disconnected', gateway_connecting: 'connecting', gateway_reconnecting: 'reconnecting'
   },
   pl: {
-    authLabel: 'Logowanie', quotaLabel: 'Limity', short_verified: 'API zaakceptowało',
+    authLabel: 'Logowanie', quotaLabel: 'Limity', short_verified: 'Zalogowane',
+    verified: 'Dane logowania zaakceptowano podczas ostatniego udanego odczytu z API zużycia; nie jest to gwarancja aktualnego logowania.',
     authHelp: 'Ostatnie uwierzytelnienie w API zużycia lub lokalna kontrola danych logowania, nie test generowania ani gwarancja aktualnego logowania. Wygaśnięcie tokenu dostępu nie dowodzi nieważności uprawnienia do odświeżania.',
     fresh: 'Aktualny odczyt', historical: 'Historyczny', short_fresh: 'Aktualne', short_historical: 'Historyczne',
     freshnessHelp: 'Aktualność odczytu limitów jest niezależna od logowania. Historyczne lub nieznane limity nie oznaczają bieżącej dostępności. Aktualny odczyt ma do 6 minut i żaden główny reset nie minął; pamięć podręczna nie odnawia czasu odczytu.',
@@ -702,7 +708,7 @@ const LOCAL_TEXT = {
     check: 'Sprawdź stan / Odśwież zużycie', refreshing: 'Sprawdzanie…', cooldown: 'Odczekaj minutę między sprawdzeniami tylko do odczytu',
     account: 'Konto / stan', session: 'Sesja', weekly: 'Tydzień', observation: 'Ostatni odczyt',
     details: 'Szczegóły', closeDetails: 'Ukryj szczegóły', noObservation: 'Brak odczytu', historicalShort: 'hist.',
-    bankedResets: 'W zapasie', usableResets: 'do użycia teraz', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
+    bankedResets: 'Resety', usableResets: 'teraz', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
     localAlias: 'Alias lokalny', saveAlias: 'Zapisz alias', clearAlias: 'Usuń alias',
     aliasHelp: 'Tylko na tym urządzeniu. Puste pole przywraca oryginalną etykietę.',
     aliasSaved: 'Alias zapisany lokalnie', aliasCleared: 'Przywrócono oryginalną etykietę',
@@ -713,20 +719,45 @@ const LOCAL_TEXT = {
     short_available: 'Dostępne', short_limit_reached: 'Limit osiągnięty', short_revoked: 'Zaloguj się ponownie',
     short_expired: 'Token wygasł / wygasa', short_missing: 'Brak tokenu', short_auth_required: 'Błąd logowania',
     short_forbidden: 'Odmowa dostępu', short_rate_limited: 'Limit zapytań API', short_unknown: 'Nieznany',
-    short_pending: 'Oczekuje na odczyt', short_stale: 'Nieaktualny odczyt',
+    short_pending: 'Do sprawdzenia', short_stale: 'Nieaktualne', freshness_unknown: 'Nieznana aktualność', quota_unknown: 'Nieznane',
     automatic: 'Odczyty automatyczne', helpHeading: 'Pomoc · tylko odczyt', providersHeading: 'Dostawcy i kolejność',
     providersHelp: 'Wybierz dostawców, których dane mają być pobierane i wyświetlane. Zapisany wybór i kolejność zostają zachowane.',
     resetProviders: 'Przywróć dostawców', moveUp: 'Przesuń w górę', moveDown: 'Przesuń w dół',
     emptyProviders: 'Wszyscy dostawcy są wyłączeni. Włącz dostawcę w sekcji Dostawcy i kolejność.',
     emptyUsage: 'Brak odczytów. Sprawdź dostawców i logowanie, następnie odśwież.',
-    manualHeading: 'Zegary ręczne', addClock: 'Dodaj zegar', close: 'Zamknij'
+    manualHeading: 'Zegary ręczne', addClock: 'Dodaj zegar', close: 'Zamknij',
+    name: 'Nazwa', planName: 'Nazwa planu', reset: 'Reset', dashboardUrl: 'Adres panelu (opcjonalny)', custom: 'Własny',
+    cancel: 'Anuluj', save: 'Zapisz', open: 'Otwórz', edit: 'Edytuj', remove: 'Usuń', unavailable: 'Niedostępne',
+    used: 'zużyto', left: 'pozostało', manualNote: 'Wpisane ręcznie. Zaktualizuj, gdy zmieni się strona dostawcy.', resetNow: 'Reset teraz', resets: 'Reset',
+    gateway: 'Brama', gateway_open: 'połączona', gateway_idle: 'bezczynna', gateway_closed: 'rozłączona', gateway_connecting: 'łączenie', gateway_reconnecting: 'ponowne łączenie'
   }
 }
 
-function useLocalText() {
-  const bundle = typeof sdk.usePluginI18n === 'function' ? sdk.usePluginI18n(PLUGIN_ID) : null
-  return key => bundle && typeof bundle.t === 'function' ? bundle.t(key) : LOCAL_TEXT.en[key] || key
+function localText(language = 'pl') {
+  return key => LOCAL_TEXT[language]?.[key] || LOCAL_TEXT.pl[key] || key
 }
+
+function useLocalText() {
+  // Polish copy is local to this plugin; Hermes locale is never changed.
+  return localText()
+}
+
+function authStatusTitle(auth, t) {
+  return `${t('authHelp')} · ${t(auth)}`
+}
+
+function quotaStatusLabel(availability, t) {
+  return availability === 'unknown' ? `${t('quotaLabel')}: ${t('quota_unknown')}` : t(`short_${availability}`)
+}
+
+function quotaWindowLabel(label, t) {
+  return /^(Session|Weekly)$/i.test(label) ? t(String(label).toLowerCase() === 'session' ? 'session' : 'weekly') : label
+}
+
+function freshnessLabel(freshness, t) {
+  return t(freshness === 'unknown' ? 'freshness_unknown' : `short_${freshness}`)
+}
+
 
 function cardsFromAccountSnapshots(snapshots) {
   const cards = []
@@ -1229,7 +1260,7 @@ function LimitCard({ card, nowMs, actions }) {
   const percent = quotaPercent(card, displayMode)
   const tone = toneForRemaining(remaining)
   const reset = formatReset(card.resetAt, card.resetText, nowMs)
-  const percentLabel = `${percent}% ${displayMode === 'used' ? 'used' : 'left'}`
+  const percentLabel = `${percent}% ${t(displayMode === 'used' ? 'used' : 'left')}`
   const detail = displayDetail(card)
   return jsxs('div', {
     style: {
@@ -1247,7 +1278,7 @@ function LimitCard({ card, nowMs, actions }) {
         children: [
           jsx('div', {
             style: { fontSize: '0.875rem', fontWeight: 600, color: text.primary },
-            children: card.label
+            children: quotaWindowLabel(card.label, t)
           }),
           card.account
             ? jsx('div', {
@@ -1258,7 +1289,7 @@ function LimitCard({ card, nowMs, actions }) {
           reset
             ? jsx('div', {
                 style: { fontSize: '0.75rem', color: text.tertiary, marginTop: 2 },
-                children: reset.startsWith('Resets') || reset.startsWith('Reset') ? reset : `Resets ${reset}`
+                children: reset.startsWith('Resets') || reset.startsWith('Reset') ? reset : `${t('resets')} ${reset}`
               })
             : null,
           card.snapshot
@@ -1277,7 +1308,7 @@ function LimitCard({ card, nowMs, actions }) {
         ? jsx('div', {
             title: detail,
             style: { fontSize: '0.75rem', color: text.quaternary, flexShrink: 0 },
-            children: 'unavailable'
+            children: t('unavailable')
           })
         : percent === null
           ? null
@@ -1361,11 +1392,11 @@ function AccountStatusCard({ snap, nowMs }) {
     style: { padding: '10px 14px', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 10, fontSize: '0.75rem', display: 'flex', flexDirection: 'column', gap: 5 },
     children: [
       jsx('strong', { children: snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
-      jsx('span', { 'data-auth-health': auth, title: t('authHelp'), style: { color: auth === 'revoked' ? text.red : text.secondary }, children: `${t('authLabel')}: ${t(`short_${auth}`)}` }),
-      jsx('span', { 'data-quota-freshness': freshness, title: t('freshnessHelp'), children: `${t('quotaLabel')}: ${t(`short_${freshness}`)}${freshness === 'fresh' ? ` · ${t(`short_${availability}`)}` : ''}` }),
-      tightest ? jsx('span', { children: `${tightest.label}: ${clampPercent(tightest.used_percent)}% used${historical ? ` · ${t('history')}` : ''}${tightest.reset_at ? ` · ${formatReset(tightest.reset_at, '', nowMs)}` : ''}` }) : null,
+      jsx('span', { 'data-auth-health': auth, title: authStatusTitle(auth, t), style: { color: auth === 'revoked' ? text.red : text.secondary }, children: t(`short_${auth}`) }),
+      jsx('span', { 'data-quota-availability': availability, title: t(availability), children: quotaStatusLabel(availability, t) }),
+      tightest ? jsx('span', { children: `${quotaWindowLabel(tightest.label, t)}: ${clampPercent(tightest.used_percent)}% ${t('used')}${historical ? ` · ${t('history')}` : ''}${tightest.reset_at ? ` · ${formatReset(tightest.reset_at, '', nowMs)}` : ''}` }) : null,
       jsx('span', { style: { color: text.tertiary }, children: `${snap.source_host || ''} · ID ${snapshotAccountKey(snap).slice(0, 10)} · ${snap.plan || ''}` }),
-      jsx('span', { children: `${observedAt ? `${t('observed')}: ${stamp(snap.fetched_at)}` : t('never')}${snap.cache_hit ? ` · ${t('cached')}` : ''}` }),
+      jsx('span', { 'data-quota-freshness': freshness, title: t('freshnessHelp'), children: `${observedAt ? `${t('observed')}: ${stamp(snap.fetched_at)}` : t('never')} · ${freshnessLabel(freshness, t)}${snap.cache_hit ? ` · ${t('cached')}` : ''}` }),
       snap.last_attempt_at ? jsx('span', { children: `${t('attempted')}: ${stamp(snap.last_attempt_at)}` }) : null,
       snap.inspected_at ? jsx('span', { children: `${t('inspected')}: ${stamp(snap.inspected_at)}` }) : null,
       jsx('span', { children: `${t('grants')}: ${snap.grant_count || 1} · ${Object.entries(snap.grant_states || {}).map(([key, count]) => `${key}: ${count}`).join(' · ')}` }),
@@ -1418,7 +1449,7 @@ function bankedResetCount(snap) {
 function resetBalanceLabel(snap, t, historical) {
   const applicable = snap.rate_limit_reset_credits && snap.rate_limit_reset_credits.applicable_available_count
   const usable = Number.isSafeInteger(applicable) && applicable >= 0 ? applicable : '?'
-  return `${t('bankedResets')}: ${bankedResetCount(snap)} · ${t('usableResets')}: ${usable}${historical ? ` · ${t('historicalShort')}` : ''}`
+  return `${t('bankedResets')}:${bankedResetCount(snap)} · ${t('usableResets')}:${usable}${historical ? ` · ${t('historicalShort')}` : ''}`
 }
 
 function OverviewQuota({ snap, label, state, freshness, nowMs }) {
@@ -1495,17 +1526,19 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
         jsxs('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap', lineHeight: '20px' }, children: [
           jsx('strong', { title: alias || undefined, style: { maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis' }, children: alias || snapshotAccountLabel(snap) || familyTitle(snap.provider) })
         ] }),
-        jsx('div', { 'data-auth-health': auth, title: t('authHelp'), style: { fontSize: '13px', lineHeight: '18px', whiteSpace: 'nowrap', color: auth === 'revoked' ? text.red : text.secondary }, children: `${t('authLabel')}: ${t(`short_${auth}`)}` })
+        jsx('div', { 'data-auth-health': auth, title: authStatusTitle(auth, t), style: { fontSize: '13px', lineHeight: '18px', whiteSpace: 'nowrap', color: auth === 'revoked' ? text.red : text.secondary }, children: t(`short_${auth}`) })
       ] }),
       jsx(OverviewQuota, { snap, label: 'Session', state, freshness, nowMs }),
       jsx(OverviewQuota, { snap, label: 'Weekly', state, freshness, nowMs }),
       jsxs('td', { style: overviewCellStyle, children: [
-        jsx('div', { 'data-quota-freshness': freshness, title: `${t('freshnessHelp')} · ${compactObservation(snap.fetched_at, nowMs, t)}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '13px', lineHeight: '18px' }, children: `${t('quotaLabel')}: ${t(`short_${freshness}`)}${freshness === 'fresh' ? ` · ${t(`short_${availability}`)}` : ''}` }),
-        jsx('span', { title: t('observed'), style: { color: text.secondary, fontSize: '13px', marginRight: 6 }, children: compactObservation(snap.fetched_at, nowMs, t) }),
-        jsx('button', { type: 'button', 'data-account-toggle': key || 'unknown', 'aria-expanded': expanded, 'aria-controls': detailId,
-          onClick: () => setExpanded(value => !value),
-          style: { border: 0, background: 'transparent', color: text.accent, padding: 0, cursor: 'pointer', fontSize: '13px', lineHeight: '18px', whiteSpace: 'nowrap' },
-          children: `${expanded ? '▾' : '▸'} ${t(expanded ? 'closeDetails' : 'details')}` })
+        jsxs('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 6, lineHeight: '20px' }, children: [
+          jsx('span', { 'data-quota-availability': availability, title: `${t(availability)} · ${t('freshnessHelp')}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '13px' }, children: quotaStatusLabel(availability, t) }),
+          jsx('button', { type: 'button', 'data-account-toggle': key || 'unknown', 'aria-expanded': expanded, 'aria-controls': detailId,
+            onClick: () => setExpanded(value => !value),
+            style: { border: 0, background: 'transparent', color: text.accent, padding: 0, cursor: 'pointer', fontSize: '13px', lineHeight: '18px', whiteSpace: 'nowrap' },
+            children: `${expanded ? '▾' : '▸'} ${t(expanded ? 'closeDetails' : 'details')}` })
+        ] }),
+        jsx('span', { 'data-quota-freshness': freshness, title: `${t('observed')}: ${observedMillis(snap.fetched_at) ? new Date(observedMillis(snap.fetched_at)).toLocaleString() : t('never')} · ${t('freshnessHelp')}`, style: { display: 'block', color: text.secondary, fontSize: '13px', lineHeight: '20px', whiteSpace: 'nowrap' }, children: `${compactObservation(snap.fetched_at, nowMs, t)} · ${freshnessLabel(freshness, t)}` })
       ] })
     ] }),
     expanded ? jsx('tr', { id: detailId, 'data-account-details': key || 'unknown', children: jsx('td', { colSpan: 4, style: { ...overviewCellStyle, padding: 10 }, children: jsxs('div', {
@@ -1515,9 +1548,9 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
         ...(snap.details || []).map((detail, index) => jsx('div', { style: { color: text.tertiary, fontSize: '0.75rem', overflowWrap: 'anywhere' }, children: detail }, index)),
         (snap.windows || []).length ? jsx('div', { style: { overflowX: 'auto' }, children: jsxs('table', {
           style: { width: '100%', borderCollapse: 'collapse', fontSize: '0.75rem' }, children: [
-            jsx('thead', { children: jsx('tr', { children: [t('windows'), t('remainingMode'), t('usedMode'), 'Reset'].map(label => jsx('th', { scope: 'col', style: overviewCellStyle, children: label }, label)) }) }),
+            jsx('thead', { children: jsx('tr', { children: [t('windows'), t('remainingMode'), t('usedMode'), t('reset')].map(label => jsx('th', { scope: 'col', style: overviewCellStyle, children: label }, label)) }) }),
             jsx('tbody', { children: snap.windows.map((window, index) => jsxs('tr', { children: [
-              jsx('td', { style: overviewCellStyle, children: window.label }),
+              jsx('td', { style: overviewCellStyle, children: quotaWindowLabel(window.label, t) }),
               jsx('td', { style: overviewCellStyle, children: quotaPercent({ remaining: window.remaining_percent, used: window.used_percent }, 'remaining') ?? '—' }),
               jsx('td', { style: overviewCellStyle, children: quotaPercent({ remaining: window.remaining_percent, used: window.used_percent }, 'used') ?? '—' }),
               jsxs('td', { style: overviewCellStyle, children: [
@@ -1533,7 +1566,9 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
 
 function AccountOverviewTable({ accounts, nowMs, accountSort }) {
   const t = useLocalText()
-  return jsx('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', minWidth: 0 }, children: jsxs('table', {
+  return jsxs('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', minWidth: 0 }, children: [
+    jsx('style', { children: '.resetwatch-local-account-table > tbody > tr[data-account-row]:hover > td { background-color: color-mix(in srgb, var(--ui-text-primary) 5%, transparent); }' }),
+    jsxs('table', { className: 'resetwatch-local-account-table',
     'aria-label': `Codex · ${t('heading')}`, style: { width: '100%', minWidth: 960, tableLayout: 'fixed', borderCollapse: 'collapse', fontSize: '15px', lineHeight: '20px' }, children: [
       jsx('colgroup', { children: [['account', '20%'], ['session', '24%'], ['weekly', '29%'], ['observation', '27%']]
         .map(([column, width]) => jsx('col', { 'data-account-column': column, style: { width } }, column)) }),
@@ -1542,7 +1577,7 @@ function AccountOverviewTable({ accounts, nowMs, accountSort }) {
       }, label)) }) }),
       jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key }, key)) })
     ]
-  }) })
+  })] })
 }
 
 function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort }) {
@@ -1579,6 +1614,7 @@ function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort }) 
 }
 
 function ClockForm({ onSave, onCancel }) {
+  const t = useLocalText()
   const [presetId, setPresetId] = useState('gemini')
   const preset = PRESETS.find(item => item.id === presetId) || PRESETS[0]
   const [name, setName] = useState(preset.name)
@@ -1617,29 +1653,29 @@ function ClockForm({ onSave, onCancel }) {
                 tap()
                 setPresetId(item.id)
               },
-              children: item.name
+              children: item.id === 'custom' ? t('custom') : item.name
             },
             item.id
           )
         )
       ] }),
       jsxs('div', { style: { display: 'grid', gridTemplateColumns: '1fr 90px 1fr', gap: 8 }, children: [
-        jsx(Field, { label: 'Name', children: jsx(NativeInput, { value: name, onChange: setName, placeholder: 'Plan name' }) }),
+        jsx(Field, { label: t('name'), children: jsx(NativeInput, { value: name, onChange: setName, placeholder: t('planName') }) }),
         jsx(Field, {
-          label: '% left',
+          label: t('remainingMode'),
           children: jsx(NativeInput, { value: left, onChange: setLeft, type: 'number', placeholder: '70' })
         }),
         jsx(Field, {
-          label: 'Resets',
+          label: t('reset'),
           children: jsx(NativeInput, { value: resetLocal, onChange: setResetLocal, type: 'datetime-local' })
         })
       ] }),
       jsx(Field, {
-        label: 'Dashboard URL (optional)',
+        label: t('dashboardUrl'),
         children: jsx(NativeInput, { value: url, onChange: setUrl, placeholder: 'https://' })
       }),
       jsxs('div', { style: { display: 'flex', gap: 8, justifyContent: 'flex-end' }, children: [
-        jsx(SmallButton, { onClick: onCancel, children: 'Cancel' }),
+        jsx(SmallButton, { onClick: onCancel, children: t('cancel') }),
         jsx(SmallButton, {
           active: true,
           disabled: !canSave,
@@ -1654,7 +1690,7 @@ function ClockForm({ onSave, onCancel }) {
               url: url.trim()
             })
           },
-          children: 'Add clock'
+          children: t('addClock')
         })
       ] })
     ]
@@ -1662,6 +1698,7 @@ function ClockForm({ onSave, onCancel }) {
 }
 
 function EditClock({ clock, onSave, onCancel }) {
+  const t = useLocalText()
   const [name, setName] = useState(clock.name)
   const [left, setLeft] = useState(String(clock.remaining))
   const [resetLocal, setResetLocal] = useState(toDatetimeLocal(clock.resetAt))
@@ -1678,7 +1715,7 @@ function EditClock({ clock, onSave, onCancel }) {
       ] }),
       jsx(NativeInput, { value: url, onChange: setUrl, placeholder: 'https://' }),
       jsxs('div', { style: { display: 'flex', gap: 6, justifyContent: 'flex-end' }, children: [
-        jsx(SmallButton, { onClick: onCancel, children: 'Cancel' }),
+        jsx(SmallButton, { onClick: onCancel, children: t('cancel') }),
         jsx(SmallButton, {
           active: true,
           disabled: !canSave,
@@ -1686,7 +1723,7 @@ function EditClock({ clock, onSave, onCancel }) {
             if (!canSave) return
             onSave({ ...clock, name: name.trim(), remaining, resetAt: fromDatetimeLocal(resetLocal), url: url.trim() })
           },
-          children: 'Save'
+          children: t('save')
         })
       ] })
     ]
@@ -1877,7 +1914,7 @@ function PluginPageContent() {
     used: remainingFromUsed(clock.remaining),
     resetAt: clock.resetAt,
     resetText: '',
-    detail: clock.url ? clock.url.replace(/^https?:\/\//, '') : 'Typed by you. Update when the vendor page changes.',
+    detail: clock.url ? clock.url.replace(/^https?:\/\//, '') : t('manualNote'),
     url: clock.url
   }))
 
@@ -1915,7 +1952,7 @@ function PluginPageContent() {
               }),
               jsx('span', {
                 style: { fontSize: '0.6875rem', color: text.tertiary },
-                children: `gateway ${gateway || 'idle'}`
+                children: `${t('gateway')}: ${t(`gateway_${gateway || 'idle'}`) === `gateway_${gateway || 'idle'}` ? gateway : t(`gateway_${gateway || 'idle'}`)}`
               }),
               jsx(SmallButton, {
                 disabled: !!live.isFetching || coolingDown,
@@ -2045,7 +2082,7 @@ function PluginPageContent() {
                                 isHttpUrl(card.url)
                                   ? jsx(SmallButton, {
                                       onClick: () => openExternal(card.url),
-                                      children: 'Open'
+                                      children: t('open')
                                     })
                                   : null,
                                 jsx(SmallButton, {
@@ -2053,14 +2090,14 @@ function PluginPageContent() {
                                     tap()
                                     setEditingId(card.id)
                                   },
-                                  children: 'Edit'
+                                  children: t('edit')
                                 }),
                                 jsx(SmallButton, {
                                   onClick: () => {
                                     tap()
                                     saveClocks(clocks.filter(item => item.id !== card.id))
                                   },
-                                  children: 'Remove'
+                                  children: t('remove')
                                 })
                               ]
                             })
@@ -2118,7 +2155,7 @@ export default {
         area: PALETTE_AREA,
         data: {
           id: 'resetwatch-local.open',
-          label: 'Resetwatch Local: Open',
+          label: `${PLUGIN_NAME}: ${localText()('open')}`,
           keywords: ['usage', 'quota', 'reset', 'limits', 'subscription'],
           run: () => go(ROUTE)
         }
@@ -2130,7 +2167,7 @@ export default {
         area: KEYBINDS_AREA,
         data: {
           id: 'resetwatch-local.open',
-          label: 'Open Resetwatch Local',
+          label: `${localText()('open')} ${PLUGIN_NAME}`,
           category: PLUGIN_NAME,
           defaults: ['mod+alt+shift+r'],
           run: () => go(ROUTE)

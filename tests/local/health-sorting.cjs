@@ -15,6 +15,7 @@ vm.runInContext(source,context);
 const run = expression => vm.runInContext(expression,context);
 context.ctx = {storage:{get:(key,fallback)=>store.has(key)?structuredClone(store.get(key)):fallback,set:(key,value)=>{writes.push(key);if(!rejectWrites)store.set(key,structuredClone(value));}},registerMany:()=>{},onDispose:()=>{}};
 run('plugin.register(ctx)');
+run("useLocalText = () => localText('en')");
 const now = Date.parse('2026-10-12T12:00:00Z');
 const fixture = (key, remaining, overrides={}) => ({provider:'openai-codex', account_key:key, account_label:`${key}@example.invalid`, account_status:'verified', credential_status:'ready', quota_state:'available', allowed:true, fetched_at:(now-60000)/1000, windows:[{label:'Session',remaining_percent:remaining,used_percent:100-remaining,reset_at:new Date(now+3600000).toISOString()},{label:'Weekly',remaining_percent:50,used_percent:50,reset_at:new Date(now+7200000).toISOString()}],...overrides});
 context.now=now;
@@ -55,8 +56,9 @@ function nodes(element,predicate) {
 function textOf(element) { return Array.isArray(element)?element.map(textOf).join(' '):element&&typeof element==='object'?textOf(element.props.children):element||''; }
 context.snap=fixture('high',90,{fetched_at:(now-900000)/1000});
 let row=resolve(run('AccountOverviewRow({snap,nowMs:now,accountKey:"openai-codex:high"})'));
-assert.match(textOf(nodes(row,n=>n.props['data-auth-health'])[0]),/Auth: API accepted/);
-assert.match(textOf(nodes(row,n=>n.props['data-quota-freshness'])[0]),/Quota: Stale/);
+assert.equal(textOf(nodes(row,n=>n.props['data-auth-health'])[0]),'Logged in');
+assert.match(textOf(nodes(row,n=>n.props['data-quota-freshness'])[0]),/min ago · Stale/);
+assert.equal(textOf(nodes(row,n=>n.props['data-quota-availability'])[0]),'Quota: Unknown');
 assert.equal(nodes(row,n=>n.type==='td').length,4,'no additional columns');
 assert.match(textOf(row),/My alias/);
 context.entries=[fixture('low',10),fixture('high',90),fixture('tie',90),fixture('old',100,{fetched_at:(now-900000)/1000}),fixture('unknown',99,{quota_state:'unknown',allowed:null}),fixture('invalid',80,{windows:[]})].map(s=>[s.account_key,{snap:s}]);
@@ -80,11 +82,12 @@ assert.deepEqual(nodes(sortedTable,n=>n.props['data-account-row']).map(n=>n.prop
 assert.equal(nodes(sortedTable,n=>n.type==='th').length,4);
 context.snap=fixture('limited',0,{quota_state:'limit_reached',allowed:false});
 row=resolve(run('AccountOverviewRow({snap,nowMs:now,accountKey:"limited"})'));
-assert.match(textOf(nodes(row,n=>n.props['data-auth-health'])[0]),/API accepted/,'exhaustion must not appear as an auth failure');
-assert.match(textOf(nodes(row,n=>n.props['data-quota-freshness'])[0]),/Fresh.*Limit reached/);
+assert.equal(textOf(nodes(row,n=>n.props['data-auth-health'])[0]),'Logged in','exhaustion must not appear as an auth failure');
+assert.match(textOf(nodes(row,n=>n.props['data-quota-freshness'])[0]),/Fresh/);
+assert.equal(textOf(nodes(row,n=>n.props['data-quota-availability'])[0]),'Limit reached');
 context.snap=fixture('banked',90,{account_status:'expired',credential_status:'expired',rate_limit_reset_credits:{available_count:5,applicable_available_count:2}});
 row=resolve(run('AccountOverviewRow({snap,nowMs:now,accountKey:"banked"})'));
-assert.match(textOf(row),/Banked: 5.*usable now: 2.*hist\./,'banked/applicable counts and historical marker survive the new health labels');
+assert.match(textOf(row),/Resets:5.*now:2.*hist\./,'banked/applicable counts and historical marker survive the new health labels');
 assert.doesNotMatch(textOf(nodes(row,n=>n.props['data-auth-health'])[0]),/grant|Sign in again/,'access-token expiry does not imply revoked grant');
 console.log('PASS local sort: default source order, remaining independent of used mode, stable ties, history/unknown last, future main resets only');
 assert.deepEqual(writes,[],'read/render do not write preferences');

@@ -15,7 +15,7 @@ async function mount(page, locale = 'en') {
   await page.addScriptTag({ content: reactScript });
   await page.addScriptTag({ content: domScript });
   await page.evaluate(({ source, preferences, locale }) => {
-    window.locale = locale;
+    window.locale = locale || 'en';
     window.storageWrites = [];
     window.storageFailure = '';
     const atom = initial => {
@@ -57,7 +57,7 @@ async function mount(page, locale = 'en') {
       atom, useValue: a => React.useSyncExternalStore(a.subscribe, a.get),
       host: { state: { gateway: atom('open'), focusedSessionId: atom(''), connectionId: atom(''), profile: atom('default') }, request: () => { throw new Error('Unexpected gateway access'); } },
       ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', PALETTE_AREA: 'palette',
-      usePluginI18n: () => ({ t: key => bundles[window.locale][key] || bundles.en[key] || key }),
+      usePluginI18n: () => ({ t: key => (bundles[window.locale] || bundles.en)[key] || bundles.en[key] || key }),
       useQuery: () => ({ data: window.liveData, isFetching: false })
     };
     const { Fragment, useEffect, useMemo, useRef, useState } = React;
@@ -65,7 +65,7 @@ async function mount(page, locale = 'en') {
     const jsx = (type, props, key) => React.createElement(type, { ...props, ...(key === undefined ? {} : { key }) });
     const jsxs = jsx;
     // Execute the real uncompiled plugin with only its approved imports supplied.
-    eval(source + '\nwindow.makeCards = cardsFromAccountSnapshots; window.liveData = {cards: cardsFromAccountSnapshots(window.fixtures), errors: []};');
+    eval(source + '\nuseLocalText = () => localText(window.locale); window.setFixtureLanguage = value => { window.locale = value; window.root.render(window.route.render()); }; window.makeCards = cardsFromAccountSnapshots; window.liveData = {cards: cardsFromAccountSnapshots(window.fixtures), errors: []};');
     const ctx = { storage: window.fixtureStorage, i18n: { register: value => bundles = value }, onDispose: () => {},
       registerMany: contributions => window.route = contributions.find(item => item.area === 'routes') };
     window.plugin.register(ctx);
@@ -106,10 +106,10 @@ if (require.main === module) (async () => {
     const banked = page.locator('[data-banked-resets]');
     assert.equal(await banked.count(), 4, 'banked-reset badges appear only for vendor-reported positive counts');
     assert.deepEqual(await banked.evaluateAll(nodes => nodes.map(node => Number(node.dataset.bankedResets))), [1, 2, 5, 5]);
-    assert.equal(await rows.nth(1).locator('[data-banked-resets]').innerText(), 'Banked: 1 · usable now: 0');
-    assert.equal(await rows.nth(2).locator('[data-banked-resets]').innerText(), 'Banked: 2 · usable now: 2');
-    assert.equal(await rows.nth(3).locator('[data-banked-resets]').innerText(), 'Banked: 5 · usable now: 3');
-    assert.equal(await rows.nth(5).locator('[data-banked-resets]').innerText(), 'Banked: 5 · usable now: ? · hist.');
+    assert.equal(await rows.nth(1).locator('[data-banked-resets]').innerText(), 'Resets:1 · now:0');
+    assert.equal(await rows.nth(2).locator('[data-banked-resets]').innerText(), 'Resets:2 · now:2');
+    assert.equal(await rows.nth(3).locator('[data-banked-resets]').innerText(), 'Resets:5 · now:3');
+    assert.equal(await rows.nth(5).locator('[data-banked-resets]').innerText(), 'Resets:5 · now:? · hist.');
     for (const index of [0, 4, 6]) assert.equal(await rows.nth(index).locator('[data-banked-resets]').count(), 0, 'zero/missing/invalid is not a banked-reset balance');
     for (const index of [1, 2, 3, 5]) {
       assert.equal(await rows.nth(index).locator('td').nth(2).locator('[data-banked-resets]').count(), 1, 'badge belongs to the account Weekly cell');
@@ -184,11 +184,11 @@ if (require.main === module) (async () => {
     assert.equal(await otherRows.nth(0).locator('td').first().locator('strong').innerText(), 'sa**@example.invalid');
     assert.equal(await otherRows.nth(2).locator('td').first().locator('strong').innerText(), 'Unknown A');
     assert.equal(await otherRows.nth(3).locator('td').first().locator('strong').innerText(), 'Codex');
-    assert.equal(await otherRows.nth(1).locator('[data-banked-resets]').innerText(), 'W zapasie: 1 · do użycia teraz: 0');
-    assert.equal(await otherRows.nth(2).locator('[data-banked-resets]').innerText(), 'W zapasie: 2 · do użycia teraz: 2');
-    assert.equal(await otherRows.nth(3).locator('[data-banked-resets]').innerText(), 'W zapasie: 5 · do użycia teraz: 3');
+    assert.equal(await otherRows.nth(1).locator('[data-banked-resets]').innerText(), 'Resety:1 · teraz:0');
+    assert.equal(await otherRows.nth(2).locator('[data-banked-resets]').innerText(), 'Resety:2 · teraz:2');
+    assert.equal(await otherRows.nth(3).locator('[data-banked-resets]').innerText(), 'Resety:5 · teraz:3');
     await otherRows.nth(2).getByRole('button', { name: 'Szczegóły', exact: false }).click();
-    assert.match(await other.locator('[data-account-details]').innerText(), /W zapasie: 2 · do użycia teraz: 2/);
+    assert.match(await other.locator('[data-account-details]').innerText(), /Resety:2 · teraz:2/);
     assert.equal(await other.getByRole('textbox', { name: 'Alias lokalny', exact: true }).inputValue(), 'Unknown A');
     await other.getByRole('button', { name: 'Usuń alias', exact: true }).click();
     assert.equal(await otherRows.nth(2).locator('td').first().locator('strong').innerText(), 'Codex');

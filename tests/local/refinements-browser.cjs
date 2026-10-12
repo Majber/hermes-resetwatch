@@ -27,7 +27,7 @@ const { mount, fixtureHtml } = require('./aliases-browser.cjs');
     assert.equal(await row.locator('[data-quota-freshness]').getAttribute('data-quota-freshness'), 'fresh');
     assert.doesNotMatch(await badge.innerText(), /hist\./, 'fresh cache reuse is not historical');
     const details = page.locator('[data-account-details]');
-    assert.doesNotMatch(await details.innerText(), /Banked:.*hist\./, 'Details uses the same freshness');
+    assert.doesNotMatch(await details.innerText(), /Resets:.*hist\./, 'Details uses the same freshness');
     assert.match(await details.innerText(), /first-host\.invalid.*ID scope-3-sy/, 'technical identity remains in Details');
     assert.doesNotMatch(await row.innerText(), /scope-3/, 'technical ID is absent from the main row');
     const vendorStamp = await page.evaluate(() => new Date(window.fixtures[3].fetched_at * 1000).toLocaleString());
@@ -47,7 +47,7 @@ const { mount, fixtureHtml } = require('./aliases-browser.cjs');
     }
     const geometry = [];
     for (const locale of ['en', 'pl']) {
-      await page.evaluate(locale => { window.locale = locale; window.root.render(window.route.render()); }, locale);
+      await page.evaluate(locale => window.setFixtureLanguage(locale), locale);
       await page.getByRole('columnheader', { name: locale === 'pl' ? 'Konto / stan' : 'Account / status', exact: true }).waitFor();
       for (const width of [1540, 1100, 420]) {
         await page.setViewportSize({ width, height: 630 });

@@ -8,6 +8,7 @@ const host = {state:{gateway:atom('open'),focusedSessionId:atom(''),profile:atom
 const context = vm.createContext({console,Date,Math,Set,Map,JSON,Number,String,Boolean,Promise,Error,RegExp, sdk:{atom,host,useValue:a=>a.get(),ROUTES_AREA:'routes',SIDEBAR_NAV_AREA:'nav',PALETTE_AREA:'palette'},Fragment:'fragment',jsx,jsxs:jsx,useEffect:()=>{},useMemo:f=>f(),useRef:v=>({current:v}),useState:v=>[typeof v==='function'?v():v,()=>{}],setInterval:()=>0,clearInterval:()=>{},setTimeout:()=>0,clearTimeout:()=>{}});
 vm.runInContext(source,context);
 const run = expression => vm.runInContext(expression,context);
+run("useLocalText = () => localText('en')");
 const now = Date.now();
 context.fixture={provider:'openai-codex',plan:'Plus',account_key:'opaque',account_label:'tester@example.invalid',account_status:'verified',quota_state:'limit_reached',allowed:false,fetched_at:(now-60_000)/1000,cache_hit:true,grant_states:{ready:1,revoked:1},windows:[{label:'Session',used_percent:100,remaining_percent:0,reset_at:new Date(now-1000).toISOString()},{label:'Weekly',used_percent:20,remaining_percent:80,reset_at:new Date(now+60_000).toISOString()}]};
 context.now=now;
@@ -69,7 +70,7 @@ console.log('Rejected credentials never imply historical quota is current');
   run('saveDisplayMode("used")');
   run('plugin.register(ctx)');
   assert.equal(run('$displayMode.get()'),'used');
-  context.sdk.usePluginI18n=()=>({t:key=>localeBundle.pl[key]||localeBundle.en[key]||key});
+  run("useLocalText = () => localText('pl')");
   assert.match(textOf(run('AccountStatusCard({snap:dead,nowMs:now})')),/Zaloguj się ponownie/);
   delete context.sdk.usePluginI18n;
   console.log('Read-only RPC, local probe path, SDK identity, registration, persistence and Polish status checks passed');

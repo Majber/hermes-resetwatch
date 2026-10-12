@@ -67,7 +67,7 @@ assert.match(textOf(page),/Sesja/); assert.match(textOf(page),/Tydzień/); asser
 assert.equal(nodes(page,n=>n.props.role==='meter').length,12,'two main quota bars per account with observations, no duplicate cards');
 assert.match(textOf(rows[0]),/80%/);
 assert.match(textOf(rows[2]),/hist\./,'revoked account quota is explicitly historical');
-assert.match(textOf(rows[6]),/Oczekuje/,'elapsed reset must not imply renewed quota');
+assert.match(textOf(rows[6]),/Do sprawdzenia/,'elapsed reset must not imply renewed quota');
 assert.deepEqual(store.get('providers'),preferences);
 assert.deepEqual(writes,[],'mounting/overview rendering must not rewrite stored preferences');
 run('saveDisplayMode("used")');
