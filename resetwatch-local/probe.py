@@ -2162,6 +2162,23 @@ def _codex_pool_accounts() -> list[dict]:
 
 def _codex_pool_fetcher(account: dict):
     def fetch() -> dict:
+        # Shared by bulk and individual reads: neither path bypasses the floor.
+        result_path = _resetwatch_cache_dir() / f"codex_result.{account['key']}.json"
+        fingerprint = hashlib.sha256(json.dumps(account, sort_keys=True, default=str).encode()).hexdigest()
+        previous_result = _read_json_file(result_path)
+        if isinstance(previous_result, dict) and previous_result.get("fingerprint") == fingerprint:
+            previous_snap = previous_result.get("snapshot")
+            checked = _finite_number(previous_result.get("checked_at"))
+            if isinstance(previous_snap, dict) and checked is not None and 0 <= time.time() - checked < FRESH_MIN_INTERVAL_SECONDS:
+                return {**previous_snap, "cache_hit": True}
+        # Upgrade an existing compatible bulk cache without a duplicate request.
+        for cli_only in (False, True):
+            cached = _read_probe_result_cache(cli_only=cli_only, max_age=FRESH_MIN_INTERVAL_SECONDS)
+            previous_snap = next((row for row in cached or [] if row.get("provider") == "openai-codex" and row.get("account_key") == account['key']), None)
+            if previous_snap:
+                checked = _finite_number(previous_snap.get("last_attempt_at"))
+                if checked is not None and 0 <= time.time() - checked < FRESH_MIN_INTERVAL_SECONDS:
+                    return previous_snap
         attempts = []
         last_attempt_at = None
         states = dict(account["grant_states"])
@@ -2223,8 +2240,35 @@ def _codex_pool_fetcher(account: dict):
             "stored_status_at": max((_finite_number(item["entry"].get("last_status_at")) or 0 for item in account["candidates"]), default=0) or None,
             "cache_hit": bool(snap.get("cache_hit")),
         })
+        _write_cache_json(result_path, {"fingerprint": fingerprint, "checked_at": time.time(), "snapshot": snap})
         return snap
     return fetch
+
+
+def _refresh_codex_account(account_key: str, *, cli_only: bool) -> list[dict]:
+    """Resolve an opaque current group; never accept a token or credential id."""
+    if not re.fullmatch(r"[a-f0-9]{20}", account_key):
+        raise ValueError("Invalid opaque account key")
+    accounts = [item for item in _codex_pool_accounts() if item["key"] == account_key]
+    if len(accounts) != 1 or "openai-codex" in _disabled_providers:
+        snap = _error_snapshot("openai-codex", "Account target unavailable in the current inventory", account_key=account_key)
+        snap.update({"account_status": "unknown", "quota_state": "unknown", "fetched_at": None, "last_attempt_at": None})
+        return [snap]
+    snap = _codex_pool_fetcher(accounts[0])()
+    inventory = _inventory_fingerprint()
+    # Merge only a compatible roster. Its age and all neighboring rows stay intact.
+    for mode in (cli_only, not cli_only):
+        path = _probe_result_cache_path(cli_only=mode)
+        payload = _read_json_file(path)
+        if not isinstance(payload, dict) or payload.get("inventory_fingerprint") != inventory or payload.get("disabled_providers", []) != sorted(_disabled_providers):
+            continue
+        rows = payload.get("snapshots")
+        if not isinstance(rows, list):
+            continue
+        if any(row.get("provider") == "openai-codex" and row.get("account_key") == account_key for row in rows if isinstance(row, dict)):
+            payload["snapshots"] = [snap if isinstance(row, dict) and row.get("provider") == "openai-codex" and row.get("account_key") == account_key else row for row in rows]
+            _write_cache_json(path, payload)
+    return [snap]
 
 
 ZCODE_CODING_PROVIDER_IDS = ("builtin:zai-coding-plan", "builtin:bigmodel-coding-plan")
@@ -3797,6 +3841,9 @@ def _main_inner() -> int:
         os.environ["HERMES_HOME"] = str(target)
     cli_only = "--cli-only" in sys.argv
     fresh = "--fresh" in sys.argv
+    account_keys = [arg[len("--account-key="):] for arg in sys.argv[1:] if arg.startswith("--account-key=")]
+    if len(account_keys) > 1 or (account_keys and not re.fullmatch(r"[a-f0-9]{20}", account_keys[0])):
+        raise ValueError("Invalid opaque account key")
     real_stdout = sys.stdout
     if tokens:
         # Never consult the shared cache or vendors for a continuation.
@@ -3810,6 +3857,12 @@ def _main_inner() -> int:
             _emit_json({"snapshot_token": token, "snapshots": _apply_slice(snapshots)}, real_stdout)
         else:
             _emit_json(_apply_slice(snapshots), real_stdout)
+
+    if account_keys:
+        with contextlib.redirect_stdout(io.StringIO()):
+            snapshots = _refresh_codex_account(account_keys[0], cli_only=cli_only)
+        emit_page(snapshots)
+        os._exit(0)
 
     # --fresh skips the 5-minute cache but still honours a short floor, so
     # repeated Refresh clicks cannot hammer vendor APIs.

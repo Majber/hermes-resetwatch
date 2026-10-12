@@ -7,7 +7,7 @@
  * Manual clocks cover plans with no public remaining-quota API.
  *
  * 1. Import the SDK as a namespace so missing named exports cannot crash load.
- * 2. No hardcoded colours. No polling faster than 5 minutes.
+ * 2. No hardcoded colours. Five-minute polling; reset-triggered reads obey 60s floor.
  * 3. No cookies, no scrape, no composer chip, no status bar, no right pane.
  */
 
@@ -23,6 +23,9 @@ const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
 const REFRESH_COOLDOWN_MS = 60 * 1000
+const RESET_BUFFER_MS = 5000
+// Attempt keys survive remounts, but timers exist only while the page is mounted.
+const resetRefreshAttempts = new Set()
 
 const host = sdk.host
 const {
@@ -665,7 +668,55 @@ function mainQuotaWindows(snap) {
   return (snap.windows || []).filter(window => providerKey(snap.provider) !== 'openai-codex' || /^(Session|Weekly)$/i.test(window.label))
 }
 
+function exhaustedWindow(window) {
+  return Number.isFinite(window.remaining_percent) && window.remaining_percent <= 0
+    || Number.isFinite(window.used_percent) && window.used_percent >= 100
+}
+
+function resetRefreshPlan(cards, nowMs, attempted, cooldownUntil, scope = '') {
+  const candidates = new Map()
+  for (const card of cards || []) {
+    const snap = card.snapshot
+    if (!snap || providerKey(snap.provider) !== 'openai-codex' || !/^[a-f0-9]{20}$/.test(snap.account_key || '')) continue
+    const observedAt = observedMillis(snap.fetched_at)
+    if (!observedAt) continue
+    for (const window of mainQuotaWindows(snap)) {
+      const reset = Date.parse(window.reset_at)
+      // Already checked after this reset, including APIs retaining old clocks.
+      if (!Number.isFinite(reset) || reset <= observedAt) continue
+      const key = JSON.stringify([scope, snap.account_key, observedAt, reset])
+      if (attempted.has(key)) continue
+      const due = Math.max(reset + RESET_BUFFER_MS, (observedMillis(snap.last_attempt_at) || observedAt) + REFRESH_COOLDOWN_MS, cooldownUntil || 0)
+      candidates.set(key, due)
+    }
+  }
+  if (!candidates.size) return null
+  const at = Math.max(nowMs, Math.min(...candidates.values()))
+  return { at, keys: [...candidates].filter(([, due]) => due <= at).map(([key]) => key) }
+}
+
+function mergeAccountRefresh(previous, next, accountKey) {
+  const base = previous || { cards: [], errors: [] }
+  const replacement = (next.cards || []).filter(card => card.accountKey === accountKey)
+  if (!replacement.length) return { ...base, errors: [...(base.errors || []), ...(next.errors || [])] }
+  let inserted = false
+  const cards = (base.cards || []).flatMap(card => {
+    if (card.accountKey !== accountKey) return [card]
+    if (inserted) return []
+    inserted = true
+    return replacement
+  })
+  if (!inserted) cards.push(...replacement)
+  return { ...base, cards, errors: [...(base.errors || []), ...(next.errors || [])] }
+}
+
 function deriveAccountStatus(snap, nowMs) {
+  const exhausted = mainQuotaWindows(snap).filter(exhaustedWindow)
+  const limited = snap.quota_state === 'limit_reached' || snap.limit_reached === true || exhausted.length > 0
+  const scopes = new Set(exhausted.map(window => String(window.label).toLowerCase()).filter(label => ['session', 'weekly'].includes(label)))
+  const blockScope = !limited ? null : scopes.size === 2 ? 'both' : scopes.size === 1 ? [...scopes][0] : 'unknown'
+  const resets = exhausted.map(window => Date.parse(window.reset_at))
+  const recoveryAt = exhausted.length && resets.every(ms => Number.isFinite(ms) && ms > nowMs) ? Math.max(...resets) : null
   // Auth describes the last check/local inspection, never quota age or inference.
   const local = snap.credential_status
   const auth = ['expired', 'missing', 'revoked'].includes(local) ? local : snap.account_status || 'unknown'
@@ -678,12 +729,12 @@ function deriveAccountStatus(snap, nowMs) {
   else if (windows.some(window => window.reset_at && Date.parse(window.reset_at) <= nowMs)) freshness = 'pending'
   else if (nowMs - observedAt > POLL_MS + REFRESH_COOLDOWN_MS) freshness = 'stale'
   else if (auth !== 'verified' || snap.error) freshness = 'historical'
-  const limited = snap.quota_state === 'limit_reached' || snap.limit_reached === true || windows.some(window => quotaPercent({ remaining: window.remaining_percent, used: window.used_percent }, 'remaining') === 0)
+
   const availability = freshness !== 'fresh' ? 'unknown' : limited ? 'limit_reached'
     : snap.allowed === true || snap.quota_state === 'available' ? 'available' : 'unknown'
   // Keep the legacy composite state for existing historical-card consumers.
   const state = auth !== 'verified' ? auth : freshness === 'fresh' ? availability : freshness === 'historical' ? 'unknown' : freshness
-  return { state, auth, freshness, availability, historical: freshness !== 'fresh' || availability === 'unknown', tightest }
+  return { state, auth, freshness, availability, historical: freshness !== 'fresh' || availability === 'unknown', tightest, blockScope, recoveryAt }
 }
 
 const LOCAL_TEXT = {
@@ -707,6 +758,7 @@ const LOCAL_TEXT = {
     heading: 'Account status', windows: 'Quota windows', history: 'Historical quota',
     count: 'accounts', help: 'Separate local copy. Status and quota are observations, not a guarantee of model availability.',
     check: 'Check status / Refresh usage', refreshing: 'Checking…', cooldown: 'Wait a minute between read-only checks',
+    checkAccount: 'Refresh this account', block_session: 'Limit: Session', block_weekly: 'Limit: Weekly', block_both: 'Limit: Session + Weekly', block_unknown: 'Limit: scope unknown', recovery: 'Predicted recovery', recoveryUnknown: 'Recovery time unknown',
     account: 'Account / status', session: 'Session', weekly: 'Weekly', observation: 'Last observation',
     details: 'Details', closeDetails: 'Hide details', noObservation: 'No observation', historicalShort: 'hist.',
     bankedResets: 'Resets', usableResets: 'now', bankedResetsHelp: 'Vendor-reported banked and applicable reset counts at the last observation. ? means unknown; 0 usable does not mean the banked reset is lost. No reason for eligibility is inferred, and no reset is applied here.',
@@ -755,6 +807,7 @@ const LOCAL_TEXT = {
     heading: 'Stan kont', windows: 'Okna limitów', history: 'Historyczny odczyt limitu',
     count: 'kont', help: 'Oddzielna kopia lokalna. Stan i limity to odczyty, nie gwarancja dostępności modelu.',
     check: 'Sprawdź stan / Odśwież zużycie', refreshing: 'Sprawdzanie…', cooldown: 'Odczekaj minutę między sprawdzeniami tylko do odczytu',
+    checkAccount: 'Odśwież to konto', block_session: 'Limit: Sesja', block_weekly: 'Limit: Tydzień', block_both: 'Limit: Sesja + Tydzień', block_unknown: 'Limit: nieznany zakres', recovery: 'Przewidywany powrót', recoveryUnknown: 'Czas powrotu nieznany',
     account: 'Konto / stan', session: 'Sesja', weekly: 'Tydzień', observation: 'Dostępność / odczyt',
     details: 'Szczegóły', closeDetails: 'Ukryj szczegóły', noObservation: 'Brak odczytu', historicalShort: 'hist.',
     bankedResets: 'W zapasie', usableResets: 'do użycia', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
@@ -798,8 +851,15 @@ function authStatusTitle(auth, t) {
   return `${t('authHelp')} · ${t(auth)}`
 }
 
-function quotaStatusLabel(availability, t) {
-  return availability === 'unknown' ? `${t('quotaLabel')}: ${t('quota_unknown')}` : t(`short_${availability}`)
+function quotaStatusLabel(availability, t, blockScope) {
+  return availability === 'limit_reached' && blockScope ? t(`block_${blockScope}`)
+    : availability === 'unknown' ? `${t('quotaLabel')}: ${t('quota_unknown')}` : t(`short_${availability}`)
+}
+
+function recoveryLabel(status, nowMs, t) {
+  if (!status.blockScope) return ''
+  const label = status.recoveryAt ? `${t('recovery')}: ${new Date(status.recoveryAt).toLocaleString()}` : t('recoveryUnknown')
+  return `${label}${status.historical ? ` · ${t('historicalShort')}` : ''}`
 }
 
 function quotaWindowLabel(label, t) {
@@ -1046,11 +1106,13 @@ async function probeStockAccountUsage(request, opts) {
     const homes = hermesHomeCandidates(hermesHomeFromConfig(shown))
     if (!homes.length) return { snapshots: null, error: 'Could not find Hermes home for probe.py' }
     const profileArg = String((opts && opts.profile) || '').trim()
+    if (opts && opts.accountKey && !/^[a-f0-9]{20}$/.test(opts.accountKey)) return { snapshots: null, error: 'Invalid opaque account key' }
     if (profileArg && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profileArg)) {
       return { snapshots: null, error: 'Invalid Hermes profile name' }
     }
     const disabled = normalizeProviderPreferences({ disabled: opts && opts.disabled }).disabled
     const flags = [
+      opts && opts.accountKey ? `--account-key=${opts.accountKey}` : '',
       '--gateway-runtime',
       disabled.length ? `--disabled-providers=${disabled.join(',')}` : '',
       profileArg ? `--profile ${quoteShell(profileArg)}` : '',
@@ -1146,6 +1208,13 @@ async function fetchLiveCards(sessionId, opts, connectionId, profile) {
   const sid = sessionId || readSessionId()
   const fresh = !!(opts && opts.fresh)
   const disabled = normalizeProviderPreferences({ disabled: opts && opts.disabled }).disabled
+  if (opts && opts.accountKey) {
+    const match = /^openai-codex:([a-f0-9]{20})$/.exec(opts.accountKey)
+    if (!match) return { cards: [], errors: ['Invalid opaque account target'] }
+    const target = await profileRequester(connectionId, profile)
+    const result = await probeStockAccountUsage(target.request, { fresh: true, accountKey: match[1], profile: target.profile, disabled })
+    return { cards: cardsFromAccountSnapshots(result.snapshots || []), errors: result.error ? [result.error] : [] }
+  }
   const nousEnabled = !disabled.includes('nous')
   if (disabled.length === LIVE_PROVIDERS.length) {
     return { cards: [], errors: [], hadSession: Boolean(sid), haveAccountRpc: false }
@@ -1436,7 +1505,8 @@ function SectionHeader({ title, open, onToggle, extra }) {
 
 function AccountStatusCard({ snap, nowMs }) {
   const t = useLocalText()
-  const { state, auth, freshness, availability, historical, tightest } = deriveAccountStatus(snap, nowMs)
+  const status = deriveAccountStatus(snap, nowMs)
+  const { state, auth, freshness, availability, historical, tightest, blockScope } = status
   const observedAt = observedMillis(snap.fetched_at)
   const stamp = value => { const ms = observedMillis(value); return ms ? new Date(ms).toLocaleString() : '—' }
   return jsxs('div', {
@@ -1445,8 +1515,9 @@ function AccountStatusCard({ snap, nowMs }) {
     children: [
       jsx('strong', { children: snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
       jsx('span', { 'data-auth-health': auth, title: authStatusTitle(auth, t), style: { color: auth === 'revoked' ? text.red : text.secondary }, children: t(`short_${auth}`) }),
-      jsx('span', { 'data-quota-availability': availability, title: t(availability), children: quotaStatusLabel(availability, t) }),
-      tightest ? jsx('span', { children: `${quotaWindowLabel(tightest.label, t)}: ${clampPercent(tightest.used_percent)}% ${t('used')}${historical ? ` · ${t('history')}` : ''}${tightest.reset_at ? ` · ${formatReset(tightest.reset_at, '', nowMs)}` : ''}` }) : null,
+      jsx('span', { 'data-quota-availability': availability, title: t(availability), children: quotaStatusLabel(availability, t, blockScope) }),
+      blockScope ? jsx('span', { children: `${availability !== 'limit_reached' ? `${t(`block_${blockScope}`)} · ` : ''}${recoveryLabel(status, nowMs, t)}` }) : null,
+      tightest && !blockScope ? jsx('span', { children: `${quotaWindowLabel(tightest.label, t)}: ${clampPercent(tightest.used_percent)}% ${t('used')}${historical ? ` · ${t('history')}` : ''}${tightest.reset_at ? ` · ${formatReset(tightest.reset_at, '', nowMs)}` : ''}` }) : null,
       jsx('span', { style: { color: text.tertiary }, children: `${snap.source_host || ''} · ID ${snapshotAccountKey(snap).slice(0, 10)} · ${snap.plan || ''}` }),
       jsx('span', { 'data-quota-freshness': freshness, title: t('freshnessHelp'), children: `${observedAt ? `${t('observed')}: ${stamp(snap.fetched_at)}` : t('never')} · ${freshnessLabel(freshness, t)}${snap.cache_hit ? ` · ${t('cached')}` : ''}` }),
       snap.last_attempt_at ? jsx('span', { children: `${t('attempted')}: ${stamp(snap.last_attempt_at)}` }) : null,
@@ -1562,14 +1633,15 @@ function AccountAliasEditor({ accountKey, alias }) {
   })
 }
 
-function AccountOverviewRow({ snap, nowMs, accountKey }) {
+function AccountOverviewRow({ snap, nowMs, accountKey, refreshAccount, refreshDisabled, busyAccount }) {
   const t = useLocalText()
   const [expanded, setExpanded] = useState(false)
   const aliases = useValue($accountAliases)
   // Never bind an alias to a masked-label fallback or an unscoped unknown.
   const aliasKey = String(snap.account_key || '').trim() ? accountKey : ''
   const alias = aliasKey && aliases[aliasKey] || ''
-  const { state, auth, freshness, availability } = deriveAccountStatus(snap, nowMs)
+  const status = deriveAccountStatus(snap, nowMs)
+  const { state, auth, freshness, availability, blockScope } = status
   const key = snapshotAccountKey(snap)
   const detailId = `resetwatch-local-details-${encodeURIComponent(key)}`
   return jsxs(Fragment, { children: [
@@ -1584,18 +1656,22 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
       jsx(OverviewQuota, { snap, label: 'Weekly', state, freshness, nowMs }),
       jsxs('td', { style: overviewCellStyle, children: [
         jsxs('div', { style: { display: 'flex', justifyContent: 'space-between', gap: 6, lineHeight: '20px' }, children: [
-          jsx('span', { 'data-quota-availability': availability, title: `${t(availability)} · ${t('freshnessHelp')}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '13px' }, children: quotaStatusLabel(availability, t) }),
+          jsx('span', { 'data-quota-availability': availability, title: `${t(availability)} · ${t('freshnessHelp')}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '13px' }, children: quotaStatusLabel(availability, t, blockScope) }),
           jsx('button', { type: 'button', 'data-account-toggle': key || 'unknown', 'aria-expanded': expanded, 'aria-controls': detailId,
             onClick: () => setExpanded(value => !value),
             style: { border: 0, background: 'transparent', color: text.accent, padding: 0, cursor: 'pointer', fontSize: '13px', lineHeight: '18px', whiteSpace: 'nowrap' },
             children: `${expanded ? '▾' : '▸'} ${t(expanded ? 'closeDetails' : 'details')}` })
         ] }),
         jsx('span', { 'data-quota-freshness': freshness, title: `${t('observed')}: ${observedMillis(snap.fetched_at) ? new Date(observedMillis(snap.fetched_at)).toLocaleString() : t('never')} · ${t('freshnessHelp')}`, style: { display: 'block', color: text.secondary, fontSize: '13px', lineHeight: '20px', whiteSpace: 'nowrap' }, children: `${compactObservation(snap.fetched_at, nowMs, t)} · ${freshnessLabel(freshness, t)}` })
+        , blockScope ? jsx('span', { style: { display: 'block', fontSize: '13px', lineHeight: '18px', color: text.secondary }, children: recoveryLabel(status, nowMs, t) }) : null
       ] })
     ] }),
     expanded ? jsx('tr', { id: detailId, 'data-account-details': key || 'unknown', children: jsx('td', { colSpan: 4, style: { ...overviewCellStyle, padding: 10 }, children: jsxs('div', {
       style: { display: 'flex', flexDirection: 'column', gap: 6, whiteSpace: 'normal' }, children: [
         jsx(AccountAliasEditor, { accountKey: aliasKey, alias }),
+        jsx(SmallButton, { disabled: refreshDisabled || !/^openai-codex:[a-f0-9]{20}$/.test(accountKey) || !refreshAccount,
+          title: refreshDisabled ? t('cooldown') : t('guidance'), onClick: () => refreshAccount(accountKey),
+          children: busyAccount === accountKey ? `↻ ${t('refreshing')}` : t('checkAccount') }),
         jsx(AccountStatusCard, { snap, nowMs }),
         ...(snap.details || []).map((detail, index) => jsx('div', { style: { color: text.tertiary, fontSize: '0.75rem', overflowWrap: 'anywhere' }, children: detail }, index)),
         (snap.windows || []).length ? jsx('div', { style: { overflowX: 'auto' }, children: jsxs('table', {
@@ -1616,7 +1692,7 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
   ] })
 }
 
-function AccountOverviewTable({ accounts, nowMs, accountSort }) {
+function AccountOverviewTable({ accounts, nowMs, accountSort, refreshAccount, refreshDisabled, busyAccount }) {
   const t = useLocalText()
   return jsxs('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', minWidth: 0 }, children: [
     jsx('style', { children: '.resetwatch-local-account-table > tbody > tr[data-account-row]:hover > td { background-color: color-mix(in srgb, var(--ui-text-primary) 5%, transparent); }' }),
@@ -1627,12 +1703,12 @@ function AccountOverviewTable({ accounts, nowMs, accountSort }) {
       jsx('thead', { children: jsx('tr', { children: ['account', 'session', 'weekly', 'observation'].map(label => jsx('th', {
         scope: 'col', style: { ...overviewCellStyle, padding: '5px 8px', color: text.secondary, fontWeight: 500, whiteSpace: 'nowrap' }, children: t(label)
       }, label)) }) }),
-      jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key }, key)) })
+      jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key, refreshAccount, refreshDisabled, busyAccount }, key)) })
     ]
   })] })
 }
 
-function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort }) {
+function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort, refreshAccount, refreshDisabled, busyAccount }) {
   const [open, toggle] = useSectionOpen(`provider:${title}`)
   const t = useLocalText()
   const accounts = new Map()
@@ -1651,7 +1727,7 @@ function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort }) 
         : !cards.length
           ? jsx('div', { style: { fontSize: '0.8125rem', color: text.tertiary }, children: empty })
           : accounts.size && [...accounts.values()].every(account => providerKey(account.snap.provider) === 'openai-codex')
-            ? jsx(AccountOverviewTable, { accounts, nowMs, accountSort })
+            ? jsx(AccountOverviewTable, { accounts, nowMs, accountSort, refreshAccount, refreshDisabled, busyAccount })
             : accounts.size
             ? sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 }, children: [
                 jsx(AccountStatusCard, { snap: account.snap, nowMs }),
@@ -1795,13 +1871,17 @@ function useLiveCardsPolled(gateway, sessionId, connectionId, profile, disabled 
     inFlight.current = true
     const gen = ++genRef.current
     setFetching(true)
-    fetchLiveCards(sid, { ...opts, disabled }, connectionId, profile)
+    return fetchLiveCards(sid, { ...opts, disabled }, connectionId, profile)
       .then(next => {
         if (gen !== genRef.current) return
-        setData(next)
+        setData(previous => opts && opts.accountKey ? mergeAccountRefresh(previous, next, opts.accountKey) : next)
       })
       .catch(error => {
         if (gen !== genRef.current) return
+        if (opts && opts.accountKey) {
+          setData(previous => ({ ...previous, errors: [errorMessage(error, 'Account refresh failed')] }))
+          return
+        }
         setData({
           cards: [],
           errors: [errorMessage(error, 'Could not read live usage')],
@@ -1829,7 +1909,7 @@ function useLiveCardsPolled(gateway, sessionId, connectionId, profile, disabled 
     }
   }, [gateway, sid, connectionId, profile, selection])
 
-  return { data, isFetching, refetch: () => load({ fresh: true }) }
+  return { data, isFetching, refetch: accountKey => load({ fresh: true, accountKey }) }
 }
 
 function useLiveCardsQuery(gateway, sessionId, connectionId, profile, disabled = []) {
@@ -1838,29 +1918,38 @@ function useLiveCardsQuery(gateway, sessionId, connectionId, profile, disabled =
   if (disabled.length) key.push(disabled.join(','))
   const contextKey = JSON.stringify(key)
   const [manual, setManual] = useState({ key: '', fetching: false, error: '' })
+  const inFlight = useRef(false)
   const manualFetching = manual.key === contextKey && manual.fetching
   const manualError = manual.key === contextKey ? manual.error : ''
   const query = useQuery({
     queryKey: key,
-    queryFn: () => fetchLiveCards(sid, { disabled }, connectionId, profile),
+    // Do not toggle enabled for a targeted read: re-enabling a stale query
+    // would immediately fetch every account and defeat exact targeting.
+    queryFn: () => inFlight.current === contextKey && queryClient && typeof queryClient.getQueryData === 'function'
+      ? queryClient.getQueryData(key) || { cards: [], errors: [] }
+      : fetchLiveCards(sid, { disabled }, connectionId, profile),
     enabled: gateway === 'open',
-    refetchInterval: POLL_MS,
+    refetchInterval: manualFetching ? false : POLL_MS,
     retry: false
   })
-  const refetch = () => {
+  const refetch = accountKey => {
+    if (inFlight.current || query.isFetching || gateway !== 'open') return null
     if (!queryClient || typeof queryClient.fetchQuery !== 'function') {
-      return query.refetch && query.refetch()
+      // Never turn an individual request into a bulk refresh on older SDKs.
+      return !accountKey && query.refetch ? query.refetch() : null
     }
+    inFlight.current = contextKey
     setManual({ key: contextKey, fetching: true, error: '' })
-    return queryClient
+    return Promise.resolve(typeof queryClient.cancelQueries === 'function' ? queryClient.cancelQueries({ queryKey: key, exact: true }) : null)
+      .then(() => queryClient
       .fetchQuery({
-        queryKey: [...key, 'fresh'],
-        queryFn: () => fetchLiveCards(sid, { fresh: true, disabled }, connectionId, profile),
+        queryKey: [...key, 'fresh', accountKey || 'all'],
+        queryFn: () => fetchLiveCards(sid, { fresh: true, disabled, accountKey }, connectionId, profile),
         staleTime: 0,
         retry: false
-      })
+      }))
       .then(data => {
-        queryClient.setQueryData(key, data)
+        queryClient.setQueryData(key, previous => accountKey ? mergeAccountRefresh(previous, data, accountKey) : data)
         setManual(previous => previous.key === contextKey ? { key: contextKey, fetching: false, error: '' } : previous)
         return data
       })
@@ -1871,6 +1960,7 @@ function useLiveCardsQuery(gateway, sessionId, connectionId, profile, disabled =
           : previous)
         return null
       })
+      .finally(() => { if (inFlight.current === contextKey) inFlight.current = false })
   }
   let data = query.data
   if (query.error) {
@@ -1934,6 +2024,10 @@ function PluginPageContent() {
   const [manualOpen, toggleManual] = useSectionOpen('manual')
   const [cooldownUntil, setCooldownUntil] = useState(0)
   const [cooldownTick, setCooldownTick] = useState(0)
+  const [busy, setBusy] = useState({ scope: '', accountKey: '' })
+  const refreshLock = useRef(false)
+  const refreshScope = JSON.stringify([connectionId, profile, sessionId, effectivePreferences.disabled])
+  const busyAccount = busy.scope === refreshScope ? busy.accountKey : ''
   const coolingDown = cooldownUntil > Date.now()
   const payload = live.data || { cards: [], errors: [], hadSession: false }
   const groups = useMemo(
@@ -1945,8 +2039,42 @@ function PluginPageContent() {
   useEffect(() => {
     $now.set(Date.now())
     const id = setInterval(() => $now.set(Date.now()), 30000)
-    return () => clearInterval(id)
+    const resumed = () => $now.set(Date.now())
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', resumed)
+    return () => {
+      clearInterval(id)
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', resumed)
+    }
   }, [])
+
+  const startRefresh = accountKey => {
+    if (refreshLock.current || live.isFetching || cooldownUntil > Date.now() || gateway !== 'open' || connectionId === null) return false
+    const result = live.refetch && live.refetch(accountKey)
+    if (!result) return false
+    refreshLock.current = true
+    setBusy({ scope: refreshScope, accountKey: accountKey || '*' })
+    setCooldownUntil(Date.now() + REFRESH_COOLDOWN_MS)
+    Promise.resolve(result).catch(() => null).finally(() => {
+      refreshLock.current = false
+      setBusy(previous => previous.scope === refreshScope ? { scope: '', accountKey: '' } : previous)
+    })
+    return true
+  }
+
+  useEffect(() => {
+    if (gateway !== 'open' || connectionId === null || live.isFetching || refreshLock.current
+      || typeof document !== 'undefined' && document.visibilityState === 'hidden') return undefined
+    const plan = resetRefreshPlan(payload.cards, Date.now(), resetRefreshAttempts, cooldownUntil, refreshScope)
+    if (!plan) return undefined
+    const id = setTimeout(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return
+      const due = resetRefreshPlan(payload.cards, Date.now(), resetRefreshAttempts, cooldownUntil, refreshScope)
+      if (!due || due.at > Date.now() || !startRefresh()) return
+      due.keys.forEach(key => resetRefreshAttempts.add(key))
+      while (resetRefreshAttempts.size > 1024) resetRefreshAttempts.delete(resetRefreshAttempts.values().next().value)
+    }, Math.min(2147483647, Math.max(0, plan.at - Date.now())))
+    return () => clearTimeout(id)
+  }, [payload.cards, gateway, connectionId, live.isFetching, cooldownUntil, refreshScope, nowMs])
 
   // Re-enable the Refresh button exactly when the cooldown ends.
   useEffect(() => {
@@ -2012,14 +2140,10 @@ function PluginPageContent() {
                 children: `${t('gateway')}: ${t(`gateway_${gateway || 'idle'}`) === `gateway_${gateway || 'idle'}` ? gateway : t(`gateway_${gateway || 'idle'}`)}`
               }),
               jsx(SmallButton, {
-                disabled: !!live.isFetching || coolingDown,
+                disabled: !!live.isFetching || coolingDown || gateway !== 'open' || connectionId === null,
                 title: coolingDown ? t('cooldown') : t('guidance'),
                 onClick: () => {
-                  if (live.isFetching || coolingDown) return
-                  tap()
-                  setCooldownUntil(Date.now() + REFRESH_COOLDOWN_MS)
-                  if (live.refetch) live.refetch()
-                  else if (queryClient) queryClient.invalidateQueries({ queryKey: [PLUGIN_ID, 'live'] })
+                  if (startRefresh()) tap()
                 },
                 children: live.isFetching ? t('refreshing') : t('check')
               })
@@ -2061,7 +2185,9 @@ function PluginPageContent() {
                               minWidth: 0
                             },
                             children: groups.map(group =>
-                              jsx(ProviderBlock, { title: group.title, cards: group.cards, nowMs, accountSort }, group.title)
+                              jsx(ProviderBlock, { title: group.title, cards: group.cards, nowMs, accountSort,
+                                refreshAccount: accountKey => { if (startRefresh(accountKey)) tap() },
+                                refreshDisabled: !!live.isFetching || coolingDown || gateway !== 'open' || connectionId === null, busyAccount }, group.title)
                             )
                           })
                         : jsx('div', {
