@@ -1,0 +1,26 @@
+name: Resetwatch Local
+on:
+  push:
+    branches: [resetwatch-local]
+  pull_request:
+    branches: [resetwatch-local]
+jobs:
+  local:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.11'
+      - run: python -m pip install httpx==0.28.1
+      - run: python -m unittest discover -s tests/local -p 'test_*.py' -v
+      - run: node tests/local/ui.cjs && node tests/local/compact.cjs
+      - run: node --check resetwatch-local/plugin.js && python -m py_compile resetwatch-local/probe.py
+      - name: Browser fixture
+        run: |
+          export RESETWATCH_FIXTURE_HTML="$RUNNER_TEMP/resetwatch-compact.html"
+          export NODE_PATH="$RUNNER_TEMP/resetwatch-browser/node_modules"
+          npm install --prefix "$RUNNER_TEMP/resetwatch-browser" --no-package-lock playwright@1.61.1
+          "$RUNNER_TEMP/resetwatch-browser/node_modules/.bin/playwright" install --with-deps chromium
+          node tests/local/compact.cjs
+          node tests/local/layout.cjs

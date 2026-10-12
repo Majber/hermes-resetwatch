@@ -2,3 +2,14 @@
 node_modules/
 __pycache__/
 *.py[cod]
+
+# Local/private data must never enter this fork.
+.env
+.env.*
+auth.json
+config.yaml
+cache/
+*.pem
+*.key
+.venv/
+resetwatch-test.*/

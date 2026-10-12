@@ -1,0 +1,9 @@
+{
+  "version": "0.2.21-local.1",
+  "upstream_base": "d460334db633fbaa91f0f8b96679e8463bad2a04",
+  "distribution": "standalone-desktop",
+  "files": {
+    "plugin.js": "be43d77b3beafe2a9819ed665d825ad89b6f730e01f31fad8748291efa32b85a",
+    "probe.py": "860429d96f6761ef6381c25fef71840b7e71b83c1f5d8145c4b913efc242c84e"
+  }
+}
