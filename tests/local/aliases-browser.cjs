@@ -10,7 +10,7 @@ const source = fs.readFileSync(path.resolve(__dirname, '../../resetwatch-local/p
 const reactScript = fs.readFileSync(path.join(path.dirname(require.resolve('react/package.json')), 'umd/react.development.js'), 'utf8');
 const domScript = fs.readFileSync(path.join(path.dirname(require.resolve('react-dom/package.json')), 'umd/react-dom.development.js'), 'utf8');
 const preferences = { disabled: ['nous', 'openrouter'], order: ['openai-codex'] };
-const fixtureHtml = '<!doctype html><html lang="en"><meta charset="utf-8"><style>:root{--ui-text-primary:#eee;--ui-text-secondary:#ccc;--ui-text-tertiary:#aaa;--ui-stroke-secondary:#444;--ui-accent:#9af;--ui-green:#8e9;--ui-bg-primary:#222}body{margin:0;font:14px Arial;background:var(--ui-bg-primary);color:var(--ui-text-primary)}#root{height:700px}</style><div id="root"></div></html>';
+const fixtureHtml = '<!doctype html><html lang="en"><meta charset="utf-8"><style>:root{color-scheme:dark;--ui-text-primary:#eee;--ui-text-secondary:#ccc;--ui-text-tertiary:#aaa;--ui-stroke-secondary:#444;--ui-accent:#9af;--ui-green:#8e9;--ui-bg-primary:#222;--ui-bg-elevated:#222}body{margin:0;font:14px Arial;background:var(--ui-bg-primary);color:var(--ui-text-primary)}#root{height:700px}</style><div id="root"></div></html>';
 async function mount(page, locale = 'en') {
   await page.addScriptTag({ content: reactScript });
   await page.addScriptTag({ content: domScript });
@@ -55,12 +55,13 @@ async function mount(page, locale = 'en') {
     let bundles;
     const sdk = {
       atom, useValue: a => React.useSyncExternalStore(a.subscribe, a.get),
-      host: { state: { gateway: atom('open'), focusedSessionId: atom(''), profile: atom('default') }, request: () => { throw new Error('Unexpected gateway access'); } },
+      host: { state: { gateway: atom('open'), focusedSessionId: atom(''), connectionId: atom(''), profile: atom('default') }, request: () => { throw new Error('Unexpected gateway access'); } },
       ROUTES_AREA: 'routes', SIDEBAR_NAV_AREA: 'nav', PALETTE_AREA: 'palette',
       usePluginI18n: () => ({ t: key => bundles[window.locale][key] || bundles.en[key] || key }),
       useQuery: () => ({ data: window.liveData, isFetching: false })
     };
     const { Fragment, useEffect, useMemo, useRef, useState } = React;
+    window.fixtureHost = sdk.host;
     const jsx = (type, props, key) => React.createElement(type, { ...props, ...(key === undefined ? {} : { key }) });
     const jsxs = jsx;
     // Execute the real uncompiled plugin with only its approved imports supplied.
@@ -73,7 +74,8 @@ async function mount(page, locale = 'en') {
   }, { source, preferences, locale });
   await page.locator('[data-account-row]').first().waitFor();
 }
-(async () => {
+module.exports = { mount, fixtureHtml };
+if (require.main === module) (async () => {
   const browser = await chromium.launch({ headless: true,
     ...(process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE } : {}), args: ['--no-sandbox'] });
   try {

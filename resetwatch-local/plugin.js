@@ -49,6 +49,13 @@ const text = {
   accent: 'var(--ui-accent)'
 }
 
+// Native popup options do not reliably inherit the select's painted surface.
+// --ui-bg-primary is a translucent fill, not a popup surface. Keep both the
+// closed control and every option on the opaque themed elevated surface.
+const nativeOptionStyle = { color: text.primary, backgroundColor: 'var(--ui-bg-elevated, Canvas)' }
+const nativeSelectStyle = { ...nativeOptionStyle, colorScheme: 'inherit', fontSize: '0.8125rem',
+  border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '2px 6px' }
+
 const PRESETS = [
   { id: 'cursor', name: 'Cursor', url: 'https://cursor.com/dashboard/spending' },
   { id: 'claude', name: 'Claude', url: 'https://claude.ai/settings/usage' },
@@ -142,9 +149,8 @@ function AccountSortControls({ connectionId, profile }) {
     jsxs('select', { 'aria-label': t('sortAccounts'), title: t('sortHelp'), value: selected.key,
       disabled: connectionId === null,
       onChange: event => save(normalizeAccountSort({ key: event.target.value })),
-      style: { fontSize: '0.6875rem', color: text.secondary, background: 'var(--ui-bg-primary)',
-        border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '2px 6px' },
-      children: ACCOUNT_SORT_KEYS.map(key => jsx('option', { value: key, children: t(`sort_${key}`) }, key)) }),
+      style: nativeSelectStyle,
+      children: ACCOUNT_SORT_KEYS.map(key => jsx('option', { value: key, style: nativeOptionStyle, children: t(`sort_${key}`) }, key)) }),
     jsx(SmallButton, { disabled: connectionId === null || selected.key === 'default', title: t(selected.direction === 'asc' ? 'ascending' : 'descending'),
       onClick: () => { const current = accountSortFor(connectionId, profile); save({ ...current, direction: current.direction === 'asc' ? 'desc' : 'asc' }) },
       children: selected.direction === 'asc' ? '↑' : '↓' }),
@@ -1118,7 +1124,7 @@ function SmallButton({ onClick, children, active, title, disabled }) {
     disabled: !!disabled,
     onClick,
     style: {
-      fontSize: '0.6875rem',
+      fontSize: '0.8125rem',
       padding: '2px 8px',
       border: `1px solid ${active ? 'var(--ui-accent)' : 'var(--ui-stroke-secondary)'}`,
       borderRadius: 4,
@@ -1427,13 +1433,13 @@ function OverviewQuota({ snap, label, state, nowMs }) {
     jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 8, whiteSpace: 'nowrap', lineHeight: '18px' }, children: [
       jsx('strong', { style: { minWidth: 36, color: toneColor(toneForRemaining(remaining)) }, children: percent === null ? '—' : `${percent}%` }),
       percent === null ? null : jsx(UsageBar, { remaining, percent, label: `${t(label === 'Session' ? 'session' : 'weekly')}: ${percent}% ${t(mode === 'used' ? 'usedMode' : 'remainingMode')}` }),
-      historical && percent !== null ? jsx('span', { title: t('history'), style: { fontSize: '0.625rem', color: text.tertiary }, children: t('historicalShort') }) : null
+      historical && percent !== null ? jsx('span', { title: t('history'), style: { fontSize: '0.75rem', color: text.secondary }, children: t('historicalShort') }) : null
     ] }),
-    jsxs('div', { style: { color: text.tertiary, fontSize: '0.6875rem', whiteSpace: 'nowrap', lineHeight: '16px' }, children: [
+    jsxs('div', { style: { color: text.secondary, fontSize: '0.75rem', whiteSpace: 'nowrap', lineHeight: '16px' }, children: [
       window ? compactReset(window.reset_at, nowMs, t) : '—',
       banked > 0 ? jsx('span', { 'data-banked-resets': banked,
         title: `${t('bankedResetsHelp')} · ${t('observed')}: ${observedMillis(snap.fetched_at) ? new Date(observedMillis(snap.fetched_at)).toLocaleString() : t('never')}`,
-        style: { marginLeft: 6, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '0 4px', fontSize: '0.625rem' },
+        style: { marginLeft: 6, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '0 4px', fontSize: '0.75rem' },
         children: resetBalanceLabel(snap, t, historical || !!snap.cache_hit) }) : null
     ] })
   ] })
@@ -1487,18 +1493,18 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
       jsxs('td', { style: overviewCellStyle, children: [
         jsxs('div', { style: { display: 'flex', gap: 6, alignItems: 'baseline', whiteSpace: 'nowrap', lineHeight: '18px' }, children: [
           jsx('strong', { title: alias || undefined, style: { maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis' }, children: alias || snapshotAccountLabel(snap) || familyTitle(snap.provider) }),
-          jsx('span', { style: { color: text.tertiary, fontSize: '0.625rem' }, children: key.slice(0, 8) })
+          jsx('span', { style: { color: text.secondary, fontSize: '0.75rem' }, children: key.slice(0, 8) })
         ] }),
-        jsx('div', { 'data-auth-health': auth, title: t('authHelp'), style: { fontSize: '0.625rem', lineHeight: '16px', whiteSpace: 'nowrap', color: auth === 'revoked' ? text.red : text.secondary }, children: `${t('authLabel')}: ${t(`short_${auth}`)}` })
+        jsx('div', { 'data-auth-health': auth, title: t('authHelp'), style: { fontSize: '0.75rem', lineHeight: '16px', whiteSpace: 'nowrap', color: auth === 'revoked' ? text.red : text.secondary }, children: `${t('authLabel')}: ${t(`short_${auth}`)}` })
       ] }),
       jsx(OverviewQuota, { snap, label: 'Session', state, nowMs }),
       jsx(OverviewQuota, { snap, label: 'Weekly', state, nowMs }),
       jsxs('td', { style: overviewCellStyle, children: [
-        jsx('div', { 'data-quota-freshness': freshness, title: `${t('freshnessHelp')} · ${compactObservation(snap.fetched_at, nowMs, t)}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '0.625rem', lineHeight: '18px' }, children: `${t('quotaLabel')}: ${t(`short_${freshness}`)}${freshness === 'fresh' ? ` · ${t(`short_${availability}`)}` : ''}` }),
-        jsx('span', { title: t('observed'), style: { color: text.tertiary, fontSize: '0.625rem', marginRight: 6 }, children: compactObservation(snap.fetched_at, nowMs, t) }),
+        jsx('div', { 'data-quota-freshness': freshness, title: `${t('freshnessHelp')} · ${compactObservation(snap.fetched_at, nowMs, t)}`, style: { whiteSpace: 'nowrap', color: availability === 'limit_reached' ? text.red : text.secondary, fontSize: '0.75rem', lineHeight: '18px' }, children: `${t('quotaLabel')}: ${t(`short_${freshness}`)}${freshness === 'fresh' ? ` · ${t(`short_${availability}`)}` : ''}` }),
+        jsx('span', { title: t('observed'), style: { color: text.secondary, fontSize: '0.75rem', marginRight: 6 }, children: compactObservation(snap.fetched_at, nowMs, t) }),
         jsx('button', { type: 'button', 'data-account-toggle': key || 'unknown', 'aria-expanded': expanded, 'aria-controls': detailId,
           onClick: () => setExpanded(value => !value),
-          style: { border: 0, background: 'transparent', color: text.accent, padding: 0, cursor: 'pointer', fontSize: '0.6875rem', lineHeight: '16px', whiteSpace: 'nowrap' },
+          style: { border: 0, background: 'transparent', color: text.accent, padding: 0, cursor: 'pointer', fontSize: '0.75rem', lineHeight: '16px', whiteSpace: 'nowrap' },
           children: `${expanded ? '▾' : '▸'} ${t(expanded ? 'closeDetails' : 'details')}` })
       ] })
     ] }),
@@ -1527,10 +1533,12 @@ function AccountOverviewRow({ snap, nowMs, accountKey }) {
 
 function AccountOverviewTable({ accounts, nowMs, accountSort }) {
   const t = useLocalText()
-  return jsx('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', minWidth: 0 }, children: jsxs('table', {
-    'aria-label': `Codex · ${t('heading')}`, style: { width: '100%', minWidth: 720, borderCollapse: 'collapse', fontSize: '0.75rem', lineHeight: '18px' }, children: [
+  return jsx('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', maxWidth: 1160, minWidth: 0 }, children: jsxs('table', {
+    'aria-label': `Codex · ${t('heading')}`, style: { width: '100%', minWidth: 960, borderCollapse: 'collapse', fontSize: '0.8125rem', lineHeight: '18px' }, children: [
+      jsx('colgroup', { children: [['account', '24%'], ['session', '18%'], ['weekly', '37%'], ['observation', '21%']]
+        .map(([column, width]) => jsx('col', { 'data-account-column': column, style: { width } }, column)) }),
       jsx('thead', { children: jsx('tr', { children: ['account', 'session', 'weekly', 'observation'].map(label => jsx('th', {
-        scope: 'col', style: { ...overviewCellStyle, padding: '5px 10px', color: text.tertiary, fontWeight: 500, whiteSpace: 'nowrap' }, children: t(label)
+        scope: 'col', style: { ...overviewCellStyle, padding: '5px 10px', color: text.secondary, fontWeight: 500, whiteSpace: 'nowrap' }, children: t(label)
       }, label)) }) }),
       jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key }, key)) })
     ]
@@ -1883,6 +1891,9 @@ function PluginPageContent() {
           flexWrap: 'wrap',
           gap: 10,
           padding: '10px 16px 6px',
+          width: '100%',
+          maxWidth: 1192,
+          boxSizing: 'border-box',
           borderBottom: '1px solid var(--ui-stroke-secondary)'
         },
         children: [
@@ -1896,17 +1907,10 @@ function PluginPageContent() {
                 'aria-label': t('displayMode'),
                 value: displayMode,
                 onChange: event => saveDisplayMode(event.target.value),
-                style: {
-                  fontSize: '0.75rem',
-                  color: text.primary,
-                  background: 'var(--ui-bg-primary)',
-                  border: '1px solid var(--ui-stroke-secondary)',
-                  borderRadius: 4,
-                  padding: '2px 6px'
-                },
+                style: nativeSelectStyle,
                 children: [
-                  jsx('option', { value: 'remaining', children: t('remainingMode') }),
-                  jsx('option', { value: 'used', children: t('usedMode') })
+                  jsx('option', { value: 'remaining', style: nativeOptionStyle, children: t('remainingMode') }),
+                  jsx('option', { value: 'used', style: nativeOptionStyle, children: t('usedMode') })
                 ]
               }),
               jsx('span', {
