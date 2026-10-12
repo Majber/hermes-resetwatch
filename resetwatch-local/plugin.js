@@ -80,6 +80,32 @@ const ALIAS_MAX_LENGTH = 80
 const ACCOUNT_SORT_STORAGE_KEY = 'account_sort'
 const ACCOUNT_SORT_KEYS = ['default', 'session', 'weekly', 'reset', 'state']
 const $accountSortPreferences = atom({})
+const VIEW_MODE_STORAGE_KEY = 'view_modes'
+const $viewModes = atom({})
+
+function viewModeFor(connectionId, profile) {
+  return $viewModes.get()[accountSortScope(connectionId, profile)] === 'codex' ? 'codex' : 'all'
+}
+
+function loadViewModes() {
+  try {
+    const raw = stored(VIEW_MODE_STORAGE_KEY, {})
+    $viewModes.set(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {})
+  } catch { $viewModes.set({}) }
+}
+
+function saveViewMode(connectionId, profile, value) {
+  if (!storage || connectionId === null) return false
+  try {
+    const raw = storage.get(VIEW_MODE_STORAGE_KEY, {})
+    const next = { ...(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}),
+      [accountSortScope(connectionId, profile)]: value === 'codex' ? 'codex' : 'all' }
+    storage.set(VIEW_MODE_STORAGE_KEY, next)
+    if (JSON.stringify(storage.get(VIEW_MODE_STORAGE_KEY, null)) !== JSON.stringify(next)) return false
+    $viewModes.set(next)
+    return true
+  } catch { return false }
+}
 
 function normalizeAccountSort(raw) {
   const key = ACCOUNT_SORT_KEYS.includes(raw && raw.key) ? raw.key : 'default'
@@ -389,6 +415,12 @@ function saveProviderPreferences(next) {
   $providerPreferences.set(value)
 }
 
+function effectiveProviderPreferences(preferences, mode) {
+  return mode === 'codex'
+    ? { ...preferences, disabled: LIVE_PROVIDERS.filter(key => key !== 'openai-codex').sort() }
+    : preferences
+}
+
 function cardProvider(card) {
   if (String(card.id).startsWith('nous:')) return 'nous'
   return accountCardProvider(card.id) || providerKey(card.provider)
@@ -401,8 +433,10 @@ function arrangeProviderCards(cards, preferences) {
     .sort((a, b) => rank(cardProvider(a)) - rank(cardProvider(b)))
 }
 
-function ProviderControls({ preferences }) {
+function ProviderControls({ preferences, connectionId, profile, mode }) {
   const t = useLocalText()
+  const [failed, setFailed] = useState(false)
+  const codexOnly = mode === 'codex'
   const order = [...preferences.order, ...LIVE_PROVIDERS.filter(key => !preferences.order.includes(key))]
   const move = (index, delta) => {
     if (index + delta < 0 || index + delta >= order.length) return
@@ -414,22 +448,34 @@ function ProviderControls({ preferences }) {
   return jsxs('details', {
     children: [
       jsx('summary', { style: { cursor: 'pointer', color: text.secondary, fontSize: '0.75rem' }, children: t('providersHeading') }),
+      jsxs('label', { style: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', color: text.secondary, fontSize: '0.8125rem' }, children: [
+        t('providerScope'),
+        jsxs('select', { 'aria-label': t('providerScope'), value: mode, disabled: connectionId === null,
+          style: nativeSelectStyle,
+          onChange: event => setFailed(!saveViewMode(connectionId, profile, event.target.value)),
+          children: [
+            jsx('option', { value: 'all', style: nativeOptionStyle, children: t('allProviders') }),
+            jsx('option', { value: 'codex', style: nativeOptionStyle, children: t('codexOnly') })
+          ] }),
+        failed ? jsx('span', { role: 'alert', style: { color: text.red }, children: t('viewModeError') }) : null
+      ] }),
+      jsx('p', { style: { margin: '0 0 6px', color: text.tertiary, fontSize: '0.75rem' }, children: t('viewModeHelp') }),
       jsx('p', { style: { color: text.tertiary, fontSize: '0.75rem' },
         children: t('providersHelp') }),
       ...order.map((key, index) => jsxs('div', {
         style: { display: 'flex', alignItems: 'center', gap: 8, maxWidth: 400, padding: '4px 0' },
         children: [
           jsxs('label', { style: { flex: 1, display: 'flex', gap: 8 }, children: [
-            jsx('input', { type: 'checkbox', checked: !preferences.disabled.includes(key),
+            jsx('input', { type: 'checkbox', checked: !preferences.disabled.includes(key), disabled: codexOnly,
               onChange: event => saveProviderPreferences({ ...preferences,
                 disabled: event.target.checked ? preferences.disabled.filter(item => item !== key) : [...preferences.disabled, key] }) }),
             PROVIDER_LABELS[key]
           ] }),
-          jsx(SmallButton, { disabled: index === 0, title: `${t('moveUp')}: ${PROVIDER_LABELS[key]}`, onClick: () => move(index, -1), children: '↑' }),
-          jsx(SmallButton, { disabled: index === order.length - 1, title: `${t('moveDown')}: ${PROVIDER_LABELS[key]}`, onClick: () => move(index, 1), children: '↓' })
+          jsx(SmallButton, { disabled: codexOnly || index === 0, title: `${t('moveUp')}: ${PROVIDER_LABELS[key]}`, onClick: () => move(index, -1), children: '↑' }),
+          jsx(SmallButton, { disabled: codexOnly || index === order.length - 1, title: `${t('moveDown')}: ${PROVIDER_LABELS[key]}`, onClick: () => move(index, 1), children: '↓' })
         ]
       }, key)),
-      jsx(SmallButton, { onClick: () => saveProviderPreferences({}), children: t('resetProviders') })
+      jsx(SmallButton, { disabled: codexOnly, onClick: () => saveProviderPreferences({}), children: t('resetProviders') })
     ]
   })
 }
@@ -677,6 +723,9 @@ const LOCAL_TEXT = {
     short_pending: 'Awaiting check', short_stale: 'Stale', freshness_unknown: 'Unknown freshness', quota_unknown: 'Unknown',
     automatic: 'Automatic observations', helpHeading: 'Help · read-only', providersHeading: 'Providers and order',
     providersHelp: 'Choose which providers to fetch and show. Saved provider choices and ordering are preserved.',
+    providerScope: 'Provider scope', allProviders: 'All providers', codexOnly: 'Codex only',
+    viewModeHelp: 'Codex only fetches and shows Codex even if previously disabled. Manual clocks are hidden, not deleted. Switch to All providers to edit and restore your saved provider choices and clocks. Saved locally per connection and profile.',
+    viewModeError: 'Could not save the provider scope',
     resetProviders: 'Reset providers', moveUp: 'Move up', moveDown: 'Move down',
     emptyProviders: 'All providers are off. Enable a provider in Providers and order.',
     emptyUsage: 'No observations yet. Check provider settings and sign-in, then refresh.',
@@ -722,6 +771,9 @@ const LOCAL_TEXT = {
     short_pending: 'Do sprawdzenia', short_stale: 'Nieaktualne', freshness_unknown: 'Nieznana aktualność', quota_unknown: 'Nieznane',
     automatic: 'Odczyty automatyczne', helpHeading: 'Pomoc · tylko odczyt', providersHeading: 'Dostawcy i kolejność',
     providersHelp: 'Wybierz dostawców, których dane mają być pobierane i wyświetlane. Zapisany wybór i kolejność zostają zachowane.',
+    providerScope: 'Zakres dostawców', allProviders: 'Wszyscy dostawcy', codexOnly: 'Tylko Codex',
+    viewModeHelp: 'Tylko Codex pobiera i pokazuje Codex, także gdy był wyłączony. Zegary ręczne są ukryte, nie usunięte. Wszyscy dostawcy przywraca zapisany wybór dostawców i zegary oraz umożliwia ich edycję. Zapis lokalny osobno dla połączenia i profilu.',
+    viewModeError: 'Nie zapisano zakresu dostawców',
     resetProviders: 'Przywróć dostawców', moveUp: 'Przesuń w górę', moveDown: 'Przesuń w dół',
     emptyProviders: 'Wszyscy dostawcy są wyłączeni. Włącz dostawcę w sekcji Dostawcy i kolejność.',
     emptyUsage: 'Brak odczytów. Sprawdź dostawców i logowanie, następnie odśwież.',
@@ -1869,7 +1921,11 @@ function PluginPageContent() {
   const profile = hasOwnerState ? owner && owner.profile : focusedProfile || activeProfile
   const preferences = useValue($providerPreferences)
   const displayMode = useValue($displayMode)
-  const live = useLiveCards(gateway, sessionId, connectionId, profile, preferences.disabled)
+  useValue($viewModes)
+  const mode = viewModeFor(connectionId, profile)
+  const codexOnly = mode === 'codex'
+  const effectivePreferences = effectiveProviderPreferences(preferences, mode)
+  const live = useLiveCards(gateway, sessionId, connectionId, profile, effectivePreferences.disabled)
   useValue($accountSortPreferences)
   const accountSort = accountSortFor(connectionId, profile)
   const [adding, setAdding] = useState(false)
@@ -1881,8 +1937,9 @@ function PluginPageContent() {
   const coolingDown = cooldownUntil > Date.now()
   const payload = live.data || { cards: [], errors: [], hadSession: false }
   const groups = useMemo(
-    () => groupLiveCards(arrangeProviderCards(payload.cards, preferences)).filter(group => group.cards.length),
-    [payload.cards, preferences]
+    () => groupLiveCards(arrangeProviderCards(payload.cards, effectivePreferences)
+      .filter(card => !codexOnly || cardProvider(card) === 'openai-codex')).filter(group => group.cards.length),
+    [payload.cards, preferences, mode]
   )
 
   useEffect(() => {
@@ -2009,7 +2066,7 @@ function PluginPageContent() {
                           })
                         : jsx('div', {
                             style: { fontSize: '0.8125rem', color: text.tertiary },
-                            children: preferences.disabled.length === LIVE_PROVIDERS.length
+                            children: effectivePreferences.disabled.length === LIVE_PROVIDERS.length
                               ? t('emptyProviders')
                               : t('emptyUsage')
                           }),
@@ -2023,12 +2080,12 @@ function PluginPageContent() {
                   })
             ]
           }),
-          jsx(ProviderControls, { preferences }),
+          jsx(ProviderControls, { preferences, connectionId, profile, mode }, accountSortScope(connectionId, profile)),
           jsxs('details', { children: [
             jsx('summary', { style: { cursor: 'pointer', color: text.secondary, fontSize: '0.75rem' }, children: t('helpHeading') }),
             jsx('p', { style: { margin: '6px 0', fontSize: '0.75rem', color: text.tertiary, lineHeight: 1.45 }, children: `${t('help')} ${t('guidance')}` })
           ] }),
-          jsxs('section', {
+          codexOnly ? null : jsxs('section', {
             style: { display: 'flex', flexDirection: 'column', gap: 8 },
             children: [
               jsx(SectionHeader, {
@@ -2139,6 +2196,7 @@ export default {
     loadClocks()
     loadAccountAliases()
     loadAccountSortPreferences()
+    loadViewModes()
     $providerPreferences.set(normalizeProviderPreferences(stored('providers', {})))
     $displayMode.set(normalizeDisplayMode(stored('display_mode', 'remaining')))
 
