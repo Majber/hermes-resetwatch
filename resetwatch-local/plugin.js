@@ -706,9 +706,9 @@ const LOCAL_TEXT = {
     heading: 'Stan kont', windows: 'Okna limitów', history: 'Historyczny odczyt limitu',
     count: 'kont', help: 'Oddzielna kopia lokalna. Stan i limity to odczyty, nie gwarancja dostępności modelu.',
     check: 'Sprawdź stan / Odśwież zużycie', refreshing: 'Sprawdzanie…', cooldown: 'Odczekaj minutę między sprawdzeniami tylko do odczytu',
-    account: 'Konto / stan', session: 'Sesja', weekly: 'Tydzień', observation: 'Ostatni odczyt',
+    account: 'Konto / stan', session: 'Sesja', weekly: 'Tydzień', observation: 'Dostępność / odczyt',
     details: 'Szczegóły', closeDetails: 'Ukryj szczegóły', noObservation: 'Brak odczytu', historicalShort: 'hist.',
-    bankedResets: 'Resety', usableResets: 'teraz', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
+    bankedResets: 'W zapasie', usableResets: 'do użycia', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
     localAlias: 'Alias lokalny', saveAlias: 'Zapisz alias', clearAlias: 'Usuń alias',
     aliasHelp: 'Tylko na tym urządzeniu. Puste pole przywraca oryginalną etykietę.',
     aliasSaved: 'Alias zapisany lokalnie', aliasCleared: 'Przywrócono oryginalną etykietę',
@@ -1449,7 +1449,7 @@ function bankedResetCount(snap) {
 function resetBalanceLabel(snap, t, historical) {
   const applicable = snap.rate_limit_reset_credits && snap.rate_limit_reset_credits.applicable_available_count
   const usable = Number.isSafeInteger(applicable) && applicable >= 0 ? applicable : '?'
-  return `${t('bankedResets')}:${bankedResetCount(snap)} · ${t('usableResets')}:${usable}${historical ? ` · ${t('historicalShort')}` : ''}`
+  return `${t('bankedResets')}: ${bankedResetCount(snap)} · ${t('usableResets')}: ${usable}${historical ? ` · ${t('historicalShort')}` : ''}`
 }
 
 function OverviewQuota({ snap, label, state, freshness, nowMs }) {
