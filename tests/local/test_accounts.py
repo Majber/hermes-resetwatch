@@ -151,7 +151,10 @@ class Accounts(unittest.TestCase):
         import httpx
         values={'OPENROUTER_API_KEY':'fixture', 'OPENROUTER_BASE_URL':'https://openrouter.ai/api/v1'}
         responses=[httpx.Response(200,json={'data':{'total_credits':20,'total_usage':5}},request=httpx.Request('GET','https://test.invalid')), httpx.Response(200,json={'data':{'limit':10,'limit_remaining':4,'usage':6}},request=httpx.Request('GET','https://test.invalid'))]
-        with patch.object(rw,'_hermes_env_value',side_effect=values.get), patch.object(rw,'_pool_entries',return_value=[]), patch.object(httpx.Client,'get',side_effect=responses):
+        # Mock the whole client: fixture responses must not depend on runner
+        # SSL/proxy initialization or native platform discovery.
+        with patch.object(rw,'_hermes_env_value',side_effect=values.get), patch.object(rw,'_pool_entries',return_value=[]), patch.object(httpx,'Client') as client:
+            client.return_value.__enter__.return_value.get.side_effect = responses
             snapshots=rw._collect_hermes_usage()
         self.assertEqual(len(snapshots),1)
         self.assertEqual(snapshots[0]['provider'],'openrouter')
