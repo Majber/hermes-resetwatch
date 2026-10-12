@@ -207,7 +207,7 @@ class Accounts(unittest.TestCase):
             self.assertIsNone(rw._read_probe_result_cache(cli_only=True))
 
     def test_collection_timeout_retains_structured_account_status(self):
-        with patch.object(rw,'_codex_pool_entries',return_value=[{'id':'a','access_token':jwt('one')}]),patch.object(rw,'_read_codex_cli_auth',return_value=None),patch.object(rw,'_disabled_providers',set(rw.LIVE_PROVIDERS)-{'openai-codex'}),patch.object(rw,'_seconds_left',return_value=0):
+        with patch.object(rw,'_codex_pool_entries',return_value=[{'id':'a','access_token':jwt('one')}]),patch.object(rw,'_read_codex_cli_auth',return_value=None),patch.object(rw,'_disabled_providers',set(rw.LIVE_PROVIDERS)-{'openai-codex'}),patch.object(rw,'_codex_pool_fetcher',return_value=lambda: rw._snapshot('openai-codex',None,[])),patch.object(rw,'_seconds_left',return_value=0):
             snapshots,complete=rw._collect_cli()
         self.assertFalse(complete)
         self.assertEqual(len(snapshots),1)
