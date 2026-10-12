@@ -63,7 +63,7 @@ assert.equal(nodes(page,n=>n.props['data-account-details']).length,0,'diagnostic
 assert.equal(nodes(page,n=>n.type==='button' && n.props['aria-expanded']===false && n.props['data-account-toggle']).length,7,'each account has a collapsed details control');
 assert.equal(nodes(page,n=>n.type==='details' && n.props.open).length,0,'help/provider controls are initially collapsed');
 assert.doesNotMatch(textOf(page),/diagnostic-host|Credential entries|Wpisy danych logowania|Sprawdzono lokalne|Live rows are plans/,'diagnostics and marketing copy stay out of overview');
-assert.match(textOf(page),/Sesja/); assert.match(textOf(page),/Tydzień/); assert.match(textOf(page),/Ostatni odczyt/);
+assert.match(textOf(page),/Sesja/); assert.match(textOf(page),/Tydzień/); assert.match(textOf(page),/Dostępność \/ odczyt/);
 assert.equal(nodes(page,n=>n.props.role==='meter').length,12,'two main quota bars per account with observations, no duplicate cards');
 assert.match(textOf(rows[0]),/80%/);
 assert.match(textOf(rows[2]),/hist\./,'revoked account quota is explicitly historical');
