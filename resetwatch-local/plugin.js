@@ -18,7 +18,9 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'resetwatch-local'
 const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
-const VERSION = '0.2.21-local.1'
+const VERSION = '0.2.22-local.2'
+// Update both files' build stamps together when deploying a new paired build.
+const LOCAL_BUILD = '2026-10-13-version-check-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -1069,6 +1071,12 @@ async function profileRequester(connectionId, profile) {
 // invocation requests at most eight snapshots and probe.py also caps bytes.
 const PROBE_SLICE = 8
 
+function probeBuildWarning(page) {
+  if (page.local_build === LOCAL_BUILD) return null
+  const backend = typeof page.local_build === 'string' ? page.local_build.slice(0, 80) : 'brak identyfikatora (starszy probe.py)'
+  return `Niezgodne wersje Resetwatch Local: UI ${LOCAL_BUILD}, probe.py ${backend}. Zaktualizuj oba pliki i przeładuj plugin. Odczyty poniżej wymagają ostrożności.`
+}
+
 function pinnedPage(text, expectedToken) {
   let parsed
   try {
@@ -1165,7 +1173,7 @@ async function probeStockAccountUsage(request, opts) {
               deadPythons.add(python)
               break
             }
-            if (!first.snapshot_token) return { snapshots: first.snapshots, error: null }
+            if (!first.snapshot_token) return { snapshots: first.snapshots, error: probeBuildWarning(first) }
             try {
               const all = [...first.snapshots]
               let offset = all.length
@@ -1177,7 +1185,7 @@ async function probeStockAccountUsage(request, opts) {
                 offset += next.length
                 if (page === 255) throw new Error('probe returned too many pages')
               }
-              return { snapshots: all, error: null }
+              return { snapshots: all, error: probeBuildWarning(first) }
             } catch (error) {
               // A valid first page owns this invocation. Never restart with
               // another interpreter or a newer cache after a pin fails.

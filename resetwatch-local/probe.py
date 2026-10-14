@@ -102,6 +102,8 @@ USER_AGENT = "resetwatch"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
+LOCAL_BUILD = '2026-10-13-version-check-1'
+
 CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_TOKEN_SKEW_SECONDS = 120
 
@@ -3689,6 +3691,9 @@ def _keep_snapshot(snapshots: list[dict], have: set[str], labelled: set[str], sn
 
 
 def _emit_json(payload: Any, stream) -> None:
+    # Stamp the running code, never a cached vendor observation.
+    if isinstance(payload, dict) and "snapshots" in payload:
+        payload = {**payload, "local_build": LOCAL_BUILD}
     text = json.dumps(_json_safe(payload), ensure_ascii=True, allow_nan=False, separators=(",", ":"))
     stream.write(text)
     stream.flush()
