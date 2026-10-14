@@ -33,13 +33,13 @@ Most usage pages live on a vendor site you have to remember to open. Resetwatch 
 | | |
 | --- | --- |
 | **Live cards**<br />Nous, Claude, Codex, Cursor, and the rest fill themselves from logins already on this machine. Each card is one window: how full it is, how much is left, and when it resets. | **Plan names**<br />Claude shows Pro, Max, Max 5x, or Max 20x. Codex shows Plus. Cursor shows Ultra, or whatever that app is on. Kimi shows Advanced. GLM shows Lite, Pro, or Max. Nous shows the portal plan, not a bare Plus. |
-| **Manual clocks**<br />Gemini, Perplexity, or anything you type. Paste the percent left and the reset time from the vendor page. Open takes you there in the system browser. | **A full page**<br />Sidebar, palette ("Resetwatch: Open"), or Ctrl/Cmd+Alt+R. Not a HUD, not a chip, not a side pane. Click a section name to fold it. They start open, and they remember. |
+| **Manual clocks**<br />Gemini, Perplexity, or anything you type. Paste the percent left and the reset time from the vendor page. Open takes you there in the system browser. | **A full page**<br />Sidebar, palette ("Resetwatch: Open"), or Ctrl/Cmd+Alt+R. Not a HUD, not a side pane. An opt-in status-bar popup shows the same cards without leaving chat. Click a section name to fold it. They start open, and they remember. |
 
 It does not scrape vendor websites. Live rows come from Hermes OAuth plus the same CLI and app logins those vendors already use. Nothing leaves this machine except the usage calls those apps already make for you.
 
 ## Leave it open
 
-- Live cards refresh every 5 minutes while the page is open.
+- Live cards refresh every 5 minutes while the page or the status-bar popup is open.
 - Probe results are cached for 5 minutes. Refresh skips that cache, with a one-minute floor so repeated clicks do not hammer vendor APIs.
 - If a login exists but the vendor call fails (HTTP error, timeout, changed payload), the card stays on the page marked "unavailable" with the reason. A vendor you never signed into shows nothing.
 - Claude and Codex pool accounts share one fold per vendor. Each account has its own rate-limit backoff.
@@ -59,6 +59,17 @@ Update both Desktop `plugin.js` and the selected gateway's `probe.py` to use pro
 
 Want another live row? Open an issue. We can add it if that app or CLI already has a remaining-quota path we can read on your machine.
 
+## Quick usage without leaving chat
+
+Choose **Status bar** in the page header to add a small chip to the bottom-right status bar. It shows the window with the least left. Click it for a popup with a meter per window, in **Remaining %** or **Used %**, with the same countdowns and local reset times as the page. Provider controls and manual clocks stay on the page.
+
+- It is off by default. Turning it off removes the chip and deletes its saved snapshot.
+- While the popup is closed, the chip shows the last check and calls no vendor. While it is open, it refreshes every 5 minutes, like the page.
+- The page and the popup share one check per connection, profile, and provider selection, across chat tabs. **Refresh** keeps the one-minute floor for both.
+- While it is on, the last successful check is saved on this machine for up to 24 hours, so the chip and page fill in right after a reload. Only card fields are saved: provider, account label as shown on the card, percentages, and reset times. Tokens, raw responses, and errors are never saved. Older snapshots are deleted.
+- **Checked** shows when the last check finished. A check from an earlier day shows its date. Unknown percentages stay unknown.
+- Desktop builds without status-bar popovers show the page only.
+
 ## Works with the logins you already have
 
 Live cards fill on their own when that login is already on the machine:
@@ -73,7 +84,7 @@ Live cards fill on their own when that login is already on the machine:
 - **GLM:** ZCode Coding Plan, or `ZAI_API_KEY` / `GLM_API_KEY` in Hermes env (includes peak / off-peak pricing)
 - **DeepSeek:** `DEEPSEEK_API_KEY` in Hermes env (balance plus peak / off-peak). Funded USD and CNY balances appear separately with their own top-up and granted amounts. An empty USD row does not hide CNY funds; currencies are never added or compared by amount. Peak pricing is Monday-Friday, 01:00-04:00 and 06:00-10:00 UTC. All other hours, including weekends, are off-peak at half price. [Official schedule](https://api-docs.deepseek.com/quick_start/pricing/).
 - **OpenCode Go:** `OPENCODE_GO_API_KEY` in Hermes env (5h, weekly, monthly). For more than one subscription, add consecutive `OPENCODE_GO_API_KEY_2`, `_3`, etc. Each distinct key gets its own numbered account card; duplicate keys are fetched once. Keep the numbers consecutive (a missing number ends discovery). Keys are never included in card labels or probe output.
-- **Ollama Cloud:** `OLLAMA_API_KEY` in Hermes env (5h / weekly; no exact reset time from the API)
+- **Ollama Cloud:** `OLLAMA_API_KEY` in Hermes env (5h / weekly limits or the monthly included allowance, with reset times, plus purchased credits)
 - **MiniMax:** `MINIMAX_API_KEY` (or `MINIMAX_CN_API_KEY`) in Hermes env (Token Plan 5h / weekly)
 - **Novita:** `NOVITA_API_KEY` in Hermes env (dollar balance)
 - **DeepInfra:** `DEEPINFRA_API_KEY` in Hermes env (prepaid balance)
@@ -152,11 +163,31 @@ python -m unittest test_profile_switch test_probe_runtime test_provider_controls
 node --test test_profile_routing.cjs
 python -m unittest test_opencode_go_multi test_probe_slicing
 node --test test_probe_pagination.cjs
+node --test test_quick_usage.cjs
+HERMES_TEST_CATALOG=1 node --test test_quick_usage.cjs
+node --test test_i18n.cjs
+HERMES_TEST_CATALOG=1 node --test test_i18n.cjs
 ```
 
 The tests use temporary homes and fake credentials. Vendor access is blocked, including when a probe cache is missing. On Linux, the routing suite also launches a fixture gateway in a custom venv to exercise UI interpreter discovery with system Python and a stale dependency cache. CI runs it against both standalone and catalog packages.
 
 The full suite, `python -m unittest discover`, also requires `httpx==0.28.1` and `PyYAML` in the test environment for vendor response and secret-cache fixtures.
+
+### Translations
+
+The page, the status-bar popup, and the sidebar, palette, and shortcut labels read their text from the `EN` bundle near the top of `plugin.js`. To add a language, add a bundle to `LOCALES` under its Desktop locale, such as `zh` or `zh-hant`. A bundle only needs the keys it translates; Desktop shows English for the rest. Entries written as functions, such as `card.left`, take the values to insert, so their translations are functions too:
+
+```js
+const LOCALES = {
+  en: EN,
+  zh: {
+    common: { refresh: '刷新' },
+    card: { left: percent => `剩余 ${percent}%` }
+  }
+}
+```
+
+Card text that comes from vendors or `probe.py`, such as plan names and "Usage unavailable", stays English for now, as does the self-updater panel. Desktop builds without plugin translations show English. After editing, run `python scripts/build_catalog.py` and the `test_i18n.cjs` commands above.
 
 ## License
 
@@ -292,6 +323,6 @@ continue to use the existing root files.
 For development, edit the root files, then run `python scripts/build_catalog.py`.
 Commit the resulting `catalog/` files. CI runs `python scripts/build_catalog.py --check`
 to keep the package current, including any companion files. Catalog packaging
-releases use `catalog-v0.2.21` and are not marked as the latest standalone release.
+releases use `catalog-v0.2.22` and are not marked as the latest standalone release.
 
 The catalog probe is read-only for all login credentials: it does not exchange refresh tokens, save login files, invoke Hermes OAuth resolvers, or launch Cursor CLI commands. Expired Kimi/Grok logins ask you to sign in using the vendor CLI. Usage and rate-limit caches may still be written. Private usage APIs remain best-effort.

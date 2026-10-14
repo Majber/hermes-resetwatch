@@ -112,7 +112,8 @@ DEEPSEEK_PEAK_WINDOWS_UTC = ((1, 4), (6, 10))
 
 OPENCODE_GO_DEFAULT_BASE_URL = "https://opencode.ai/zen/go/v1"
 
-OLLAMA_CLOUD_USAGE_URL = "https://ollama.com/api/usage"
+# https://docs.ollama.com/api/balance
+OLLAMA_CLOUD_BALANCE_URL = "https://ollama.com/api/balance"
 OLLAMA_CLOUD_ME_URL = "https://ollama.com/api/me"
 
 MINIMAX_TOKEN_PLAN_URLS = (
@@ -1233,6 +1234,10 @@ def _fetch_grok_account_usage() -> Optional[dict]:
             settings = {}
     if not isinstance(payload, dict):
         return None
+    return _parse_grok_billing(payload, settings, None)
+
+
+def _parse_grok_billing(payload: dict, settings: dict, notes: Optional[list[str]]) -> Optional[dict]:
     config = payload.get("config") if isinstance(payload.get("config"), dict) else payload
     windows: list[dict] = []
     period = config.get("currentPeriod") if isinstance(config.get("currentPeriod"), dict) else None
@@ -1300,7 +1305,7 @@ def _fetch_grok_account_usage() -> Optional[dict]:
         windows.append(
             _win(_grok_period_label(period), None, reset_at, "Usage unavailable")
         )
-    return _snapshot("grok", plan, windows)
+    return _snapshot("grok", plan, windows, notes)
 
 
 def _claude_home() -> Path:
@@ -2068,6 +2073,13 @@ def _pool_entries(provider: str) -> list[dict]:
     return []
 
 
+CODEX_DEAD_LOGIN = "Hermes reports this login is no longer valid. Sign in to Codex again in Hermes."
+CODEX_EXPIRED_LOGIN = (
+    "The access token has expired, so usage was not checked. Resetwatch does not renew logins; "
+    "Hermes may renew it the next time it uses this account."
+)
+
+
 def _codex_pool_entries() -> list[dict]:
     return _pool_entries("openai-codex")
 
@@ -2076,13 +2088,16 @@ def _codex_pool_accounts() -> list[dict]:
     accounts: list[dict] = []
     seen_tokens: set[str] = set()
     seen_accounts: set[str] = set()
+    unusable: list[tuple[dict, str, str]] = []
     for entry in _codex_pool_entries():
-        if str(entry.get("last_status") or "").strip().lower() == "dead":
-            continue
         token = str(entry.get("access_token") or "").strip()
         if not token or token in seen_tokens:
             continue
+        if str(entry.get("last_status") or "").strip().lower() == "dead":
+            unusable.append((entry, token, CODEX_DEAD_LOGIN))
+            continue
         if _codex_token_expiring(token):
+            unusable.append((entry, token, CODEX_EXPIRED_LOGIN))
             continue
         seen_tokens.add(token)
         account_id = _codex_account_id_from_token(token)
@@ -2101,11 +2116,38 @@ def _codex_pool_accounts() -> list[dict]:
                 "key": str(entry.get("id") or "").strip(),
             }
         )
+    # A login that cannot be checked read-only still gets a card saying why,
+    # unless another login for the same account already has numbers.
+    for entry, token, status in unusable:
+        if token in seen_tokens:
+            continue
+        seen_tokens.add(token)
+        account_id = _codex_account_id_from_token(token)
+        if account_id:
+            if account_id in seen_accounts:
+                continue
+            seen_accounts.add(account_id)
+        accounts.append(
+            {
+                "token": token,
+                "account_id": account_id,
+                "label": _codex_card_label(entry, token),
+                "key": str(entry.get("id") or "").strip(),
+                "status": status,
+            }
+        )
     return accounts
 
 
 def _codex_pool_fetcher(account: dict):
     def fetch() -> Optional[dict]:
+        if account.get("status"):
+            return _error_snapshot(
+                "openai-codex",
+                account["status"],
+                account_label=account.get("label"),
+                account_key=account.get("key"),
+            )
         return _fetch_codex_usage(
             account.get("token") or "",
             account.get("account_id"),
@@ -2714,13 +2756,10 @@ def _ollama_api_key() -> Optional[str]:
     return _hermes_env_value("OLLAMA_API_KEY")
 
 
-def _ollama_used_percent(value: Any) -> Optional[float]:
-    """Ollama Cloud limits.usage is a 0-1 fraction. Do not also accept 0-100."""
-    if isinstance(value, bool):
+def _ollama_number(value: Any) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
         return None
-    if isinstance(value, (int, float)) and math.isfinite(value) and 0.0 <= float(value) <= 1.0:
-        return max(0.0, min(100.0, float(value) * 100.0))
-    return None
+    return float(value)
 
 
 def _ollama_plan_name(payload: Optional[dict]) -> Optional[str]:
@@ -2734,11 +2773,7 @@ def _ollama_plan_name(payload: Optional[dict]) -> Optional[str]:
 
 
 def _fetch_ollama_cloud_account_usage() -> Optional[dict]:
-    """Ollama Cloud session/weekly from GET /api/usage (Hermes OLLAMA_API_KEY).
-
-    Undocumented private endpoint the web settings page uses. Best-effort;
-    no reset timestamps in the payload (session ~5h, weekly ~7d on pricing).
-    """
+    """Ollama Cloud included and purchased credits from GET /api/balance (Hermes OLLAMA_API_KEY)."""
     token = _ollama_api_key()
     if not token:
         return None
@@ -2765,35 +2800,51 @@ def _fetch_ollama_cloud_account_usage() -> Optional[dict]:
                 plan = _ollama_plan_name(body if isinstance(body, dict) else None)
         except Exception:
             plan = None
-        response = client.get(OLLAMA_CLOUD_USAGE_URL, headers=headers)
+        response = client.get(OLLAMA_CLOUD_BALANCE_URL, headers=headers)
         response.raise_for_status()
         payload = response.json() or {}
     if not isinstance(payload, dict):
-        return None
-    limits = payload.get("limits") if isinstance(payload.get("limits"), dict) else {}
+        raise ValueError("balance API returned a non-object body")
+    return _parse_ollama_balance(payload, plan)
+
+
+def _parse_ollama_balance(payload: dict, plan: Optional[str]) -> Optional[dict]:
+    included = payload.get("included") if isinstance(payload.get("included"), dict) else {}
     windows: list[dict] = []
-    for key, label, hint in (
-        ("session", "5h", "resets about every 5h"),
-        ("weekly", "Weekly", "resets about every 7 days"),
-    ):
-        item = limits.get(key) if isinstance(limits, dict) else None
+    # Plans with session and weekly limits report remaining percent (0-100).
+    for key, label in (("session", "5h"), ("weekly", "Weekly")):
+        item = included.get(key)
         if not isinstance(item, dict):
             continue
-        used = _ollama_used_percent(item.get("usage"))
-        if used is None:
+        remaining = _ollama_number(item.get("remaining_percent"))
+        if remaining is None or not 0.0 <= remaining <= 100.0:
             continue
-        windows.append(_win(label, used, None, hint))
-    activity = payload.get("activity") if isinstance(payload.get("activity"), dict) else {}
-    cost = activity.get("cost") if isinstance(activity, dict) else None
-    if isinstance(cost, str) and cost.strip():
-        text = cost.strip()
-        if text[:1].isdigit():
-            text = f"${text}"
-        windows.append(_win("Activity", None, None, f"{text} last 4 weeks"))
-    elif isinstance(cost, (int, float)) and math.isfinite(cost):
-        windows.append(_win("Activity", None, None, f"${float(cost):.5f} last 4 weeks"))
+        windows.append(_win(label, 100.0 - remaining, _parse_dt(item.get("resets_at"))))
+    # Other plans get a USD allowance for the monthly billing period.
+    balance = _ollama_number(included.get("balance_usd"))
+    allowance = _ollama_number(included.get("allowance_usd"))
+    has_allowance = balance is not None and allowance is not None
+    if has_allowance and allowance > 0:
+        period = included.get("period") if isinstance(included.get("period"), dict) else {}
+        used = max(0.0, allowance - balance)
+        windows.append(
+            _win(
+                "Monthly",
+                min(100.0, used * 100.0 / allowance),
+                _parse_dt(period.get("until")),
+                f"${used:.2f} of ${allowance:.2f} used",
+            )
+        )
+    purchased = payload.get("purchased") if isinstance(payload.get("purchased"), dict) else {}
+    bought = _ollama_number(purchased.get("balance_usd"))
+    if bought is not None and bought > 0:
+        windows.append(_win("Purchased", None, None, f"${bought:.2f} left"))
     if not windows:
-        return None
+        if has_allowance:
+            # No included allowance and no purchased credits to track.
+            return None
+        # Say so when the response shape changes instead of hiding the card.
+        raise ValueError("balance API returned no included or purchased credits")
     return _snapshot("ollama", plan, windows)
 
 
@@ -3376,6 +3427,13 @@ def _collect_cli() -> tuple[list[dict], bool]:
     cli_context = _codex_cli_access_context() if "openai-codex" not in _disabled_providers else None
     if cli_context:
         cli_token = str(cli_context[0] or "").strip()
+        cli_account = str(cli_context[1] or "").strip() or _codex_account_id_from_token(cli_token)
+        # A working Codex CLI login covers its account; drop a stale pool card for it.
+        if cli_account:
+            pool_accounts = [
+                account for account in pool_accounts
+                if not (account.get("status") and account.get("account_id") == cli_account)
+            ]
     # (provider, label, key, fetcher). provider/label/key name the error card
     # when a fetcher raises or runs past the budget.
     fetchers: list[tuple[str, Optional[str], Optional[str], Any]] = [
@@ -3567,6 +3625,51 @@ def _resolve_profile_home(name: str, here: Optional[Path] = None) -> Optional[Pa
     return candidate.resolve() if candidate.is_dir() else None
 
 
+def _hermes_install_pythons() -> list[str]:
+    """Interpreters of installer-managed Hermes dependency environments, active first.
+
+    The default installer starts the gateway on a bare bundled interpreter
+    (``~/.hermes/tools/python-*/bin/python3 -I``), so neither its argv[0] nor a
+    ``python3`` on the gateway's PATH imports httpx. Its packages live in a
+    generated venv, ``<HERMES_HOME>/installs/<id>/environments/<hash>/venv``,
+    whose hash changes on every update. ``installs/<id>/facts.json`` names the
+    active one (``packages.venv.environment``). Other environments follow,
+    newest first, for an install whose facts are missing or unreadable. Named
+    profiles live under ``<base>/profiles/<name>``; installs stay in the base.
+    """
+    interpreter = Path("Scripts/python.exe") if os.name == "nt" else Path("bin/python")
+    roots: list[Path] = []
+    for home in _hermes_homes():
+        roots.append(home)
+        if home.parent.name == "profiles":
+            roots.append(home.parent.parent)
+    active: list[str] = []
+    others: list[tuple[float, str]] = []
+    for root in dict.fromkeys(roots):
+        installs = root / "installs"
+        try:
+            if not installs.is_dir():
+                continue
+            facts_files = sorted(installs.glob("*/facts.json"))
+            venvs = list(installs.glob("*/environments/*/venv"))
+        except OSError:
+            continue
+        for facts in facts_files:
+            try:
+                environment = json.loads(facts.read_text(encoding="utf-8"))["packages"]["venv"]["environment"]
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            if isinstance(environment, str) and Path(environment).is_absolute():
+                active.append(str(Path(environment) / interpreter))
+        for venv in venvs:
+            try:
+                others.append(((venv / "pyvenv.cfg").stat().st_mtime, str(venv / interpreter)))
+            except OSError:
+                continue
+    ordered = active + [path for _, path in sorted(others, reverse=True)]
+    return [path for path in dict.fromkeys(ordered) if Path(path).is_file()]
+
+
 def _gateway_python_candidates(proc_root: Path = Path("/proc")) -> list[str]:
     """Discover on this backend, without resolving venv interpreter symlinks.
 
@@ -3574,7 +3677,9 @@ def _gateway_python_candidates(proc_root: Path = Path("/proc")) -> list[str]:
     ancestors, reading argv[0] (never returning or logging command arguments).
     /proc/<pid>/exe would lose the venv by resolving to the system binary.
     Other platforms and restricted proc mounts retain the environment and
-    Desktop's existing home/PATH fallbacks.
+    Desktop's existing home/PATH fallbacks. A gateway from the default
+    installer runs a bare bundled interpreter; its dependency venv comes last,
+    from the installer's own records (``_hermes_install_pythons``).
     """
     candidates: list[str] = []
     explicit = os.environ.get("HERMES_PYTHON", "").strip()
@@ -3601,6 +3706,7 @@ def _gateway_python_candidates(proc_root: Path = Path("/proc")) -> list[str]:
             pid = int(parent.group(1))
         except (OSError, ValueError):
             break
+    candidates.extend(_hermes_install_pythons())
     return list(dict.fromkeys(candidates))
 
 
