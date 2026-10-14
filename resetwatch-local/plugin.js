@@ -20,7 +20,7 @@ const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
 const VERSION = '0.2.22-local.2'
 // Update both files' build stamps together when deploying a new paired build.
-const LOCAL_BUILD = '2026-10-13-version-check-1'
+const LOCAL_BUILD = '2026-10-13-reset-expiry-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -1532,6 +1532,7 @@ function AccountStatusCard({ snap, nowMs }) {
       snap.inspected_at ? jsx('span', { children: `${t('inspected')}: ${stamp(snap.inspected_at)}` }) : null,
       jsx('span', { children: `${t('grants')}: ${snap.grant_count || 1} · ${Object.entries(snap.grant_states || {}).map(([key, count]) => `${key}: ${count}`).join(' · ')}` }),
       bankedResetCount(snap) > 0 ? jsx('span', { style: { color: text.tertiary }, children: `${resetBalanceLabel(snap, t, freshness !== 'fresh')} · ${t('bankedResetsHelp')}` }) : null,
+      bankedResetCount(snap) > 0 ? jsx('div', { style: { whiteSpace: 'pre-line', fontSize: '13px' }, children: resetExpirySummary(snap, Date.now()).full }) : null,
       state !== 'available' && state !== 'limit_reached' ? jsx('span', { style: { color: text.tertiary }, children: t('guidance') }) : null
     ]
   })
@@ -1577,6 +1578,22 @@ function bankedResetCount(snap) {
   return null
 }
 
+function resetExpirySummary(snap, nowMs) {
+  const data = snap.banked_reset_details
+  if (!data || data.status !== 'verified') return { short: 'Ważność: nieznana', full: 'Nie udało się pobrać dat ważności resetów.' }
+  const credits = Array.isArray(data.credits) ? data.credits : []
+  const dated = credits.filter(row => row.expires_at && Number.isFinite(Date.parse(row.expires_at)))
+    .sort((a, b) => Date.parse(a.expires_at) - Date.parse(b.expires_at))
+  const observed = Number(data.observed_at) * 1000
+  const stale = !Number.isFinite(observed) || nowMs - observed > POLL_MS + REFRESH_COOLDOWN_MS || dated.some(row => Date.parse(row.expires_at) <= nowMs)
+  const stamp = stale ? ' · do sprawdzenia' : ''
+  const format = value => new Date(value).toLocaleString('pl-PL', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const full = credits.map((row, index) => `Reset ${index + 1}: ${row.expires_at ? format(row.expires_at) : 'brak podanej daty wygaśnięcia'}`).join('\n')
+  const incomplete = credits.length !== bankedResetCount(snap) ? '\nLista szczegółów może być niepełna; licznik pochodzi z osobnego odczytu.' : ''
+  return { short: dated.length ? `Wygasa: ${new Date(dated[0].expires_at).toLocaleDateString('pl-PL', {day:'2-digit',month:'2-digit'})}${stamp}` : `Ważność: brak dat${stamp}`,
+    full: (full || 'Brak szczegółów resetów w odpowiedzi.') + incomplete + stamp }
+}
+
 function resetBalanceLabel(snap, t, historical) {
   const applicable = snap.rate_limit_reset_credits && snap.rate_limit_reset_credits.applicable_available_count
   const usable = Number.isSafeInteger(applicable) && applicable >= 0 ? applicable : '?'
@@ -1603,7 +1620,8 @@ function OverviewQuota({ snap, label, state, freshness, nowMs }) {
       banked > 0 ? jsx('span', { 'data-banked-resets': banked,
         title: `${t('bankedResetsHelp')} · ${t('observed')}: ${observedMillis(snap.fetched_at) ? new Date(observedMillis(snap.fetched_at)).toLocaleString() : t('never')}`,
         style: { maxWidth: '100%', boxSizing: 'border-box', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '0 4px', fontSize: '13px' },
-        children: resetBalanceLabel(snap, t, freshness !== 'fresh') }) : null
+        children: resetBalanceLabel(snap, t, freshness !== 'fresh') }) : null,
+      banked > 0 ? jsx('span', { 'data-reset-expiry': true, title: resetExpirySummary(snap, nowMs).full, style: { fontSize: '13px', color: text.secondary }, children: resetExpirySummary(snap, nowMs).short }) : null
     ] })
   ] })
 }

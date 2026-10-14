@@ -102,7 +102,7 @@ USER_AGENT = "resetwatch"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
-LOCAL_BUILD = '2026-10-13-version-check-1'
+LOCAL_BUILD = '2026-10-13-reset-expiry-1'
 
 CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_TOKEN_SKEW_SECONDS = 120
@@ -1986,6 +1986,30 @@ def _codex_windows_from_payload(payload: dict) -> list[dict]:
     return windows
 
 
+def _read_reset_expiries(access: str, headers: dict, usage_url: str) -> dict:
+    """Best-effort read only; failure must never discard successful quota."""
+    import httpx
+    try:
+        with httpx.Client(timeout=min(4.0, HTTP_TIMEOUT)) as client:
+            response = client.get(usage_url.rsplit("/", 1)[0] + "/rate-limit-reset-credits", headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get("credits"), list):
+            return {"status": "unknown", "credits": [], "observed_at": None}
+        credits = []
+        for item in payload["credits"]:
+            if not isinstance(item, dict) or item.get("status") != "available":
+                continue
+            expiry = _parse_dt(item.get("expires_at"))
+            granted = _parse_dt(item.get("granted_at"))
+            credits.append({"expires_at": expiry.isoformat() if expiry else None,
+                            "granted_at": granted.isoformat() if granted else None})
+        credits.sort(key=lambda row: row["expires_at"] or "9999")
+        return {"status": "verified", "credits": credits, "observed_at": time.time()}
+    except Exception:
+        return {"status": "unknown", "credits": [], "observed_at": None}
+
+
 def _fetch_codex_usage(
     token: str,
     account_id: Optional[str] = None,
@@ -2050,6 +2074,10 @@ def _fetch_codex_usage(
     )
     snap["fetched_at"] = observed_at
     snap["rate_limit_reset_credits"] = reset_counts
+    if banked is not None and banked > 0:
+        snap["banked_reset_details"] = _read_reset_expiries(access, headers, _codex_usage_url(base_url or CODEX_DEFAULT_BASE_URL))
+    else:
+        snap["banked_reset_details"] = {"status": "not_needed", "credits": [], "observed_at": None}
     snap["allowed"] = limits.get("allowed") if isinstance(limits.get("allowed"), bool) else None
     snap["limit_reached"] = limits.get("limit_reached") if isinstance(limits.get("limit_reached"), bool) else None
     main_windows = _codex_windows_from_rate_limit(limits)
@@ -2229,7 +2257,7 @@ def _codex_pool_fetcher(account: dict):
             if isinstance(previous, dict) and previous.get("account_key") == account["key"]:
                 observed_at = _finite_number(previous.get("fetched_at"))
                 if observed_at is not None and 0 <= time.time() - observed_at <= 24 * 3600:
-                    for key in ("windows", "plan", "fetched_at", "quota_state", "allowed", "limit_reached", "rate_limit_reset_credits"):
+                    for key in ("windows", "plan", "fetched_at", "quota_state", "allowed", "limit_reached", "rate_limit_reset_credits", "banked_reset_details"):
                         snap[key] = previous.get(key)
                     snap["cache_hit"] = True
         snap.update({

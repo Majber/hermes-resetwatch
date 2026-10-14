@@ -87,7 +87,7 @@ class Accounts(unittest.TestCase):
                 response = httpx.Response(200, json=payload, request=httpx.Request('GET', 'https://fixture.invalid/usage'))
                 with patch.object(httpx.Client, 'get', return_value=response) as get:
                     snap = rw._fetch_codex_usage('synthetic-access', account_key='synthetic-key')
-                self.assertEqual(get.call_count, 1, 'metadata uses the existing usage response only')
+                self.assertEqual(get.call_count, 2 if available > 0 else 1, 'expiry details add one read only for positive reset balances')
                 self.assertEqual(snap.get('rate_limit_reset_credits'), {
                     'available_count': available, 'applicable_available_count': applicable})
                 if available:
