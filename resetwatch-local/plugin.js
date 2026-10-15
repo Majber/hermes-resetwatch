@@ -18,9 +18,9 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'resetwatch-local'
 const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
-const VERSION = '0.2.22-local.2'
+const VERSION = '0.2.22-local.3'
 // Update both files' build stamps together when deploying a new paired build.
-const LOCAL_BUILD = '2026-10-13-reset-expiry-1'
+const LOCAL_BUILD = '2026-10-15-session-rpc-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -1051,18 +1051,25 @@ function pickProbeFailure(failures) {
   return list[list.length - 1].message
 }
 
-async function profileRequester(connectionId, profile) {
+async function profileRequester(connectionId, profile, sessionId) {
   if (connectionId === null) throw new Error('Could not find the owner of the focused session')
+  // The canonical owner requires a local session for shell.exec. Capture the
+  // fetch's runtime id, not changing UI focus, for every pinned probe page.
+  const requestParams = (method, params) => {
+    if (method !== 'shell.exec') return params
+    if (!sessionId) throw new Error('Brak aktywnej sesji do odczytu Resetwatch Local. Otwórz lokalną rozmowę i spróbuj ponownie.')
+    return { ...params, session_id: sessionId }
+  }
   const active = String(profile || '').trim()
   if (!active || !connectionId || typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
-    return { request: (method, params = {}) => host.request(method, params), profile: active }
+    return { request: (method, params = {}) => host.request(method, requestParams(method, params)), profile: active }
   }
   const routes = await host.profileRoutes()
   const sourceRoutes = routes.filter(item => item && item.connectionId === connectionId)
   const route = sourceRoutes.find(item => item.profile === active) || sourceRoutes.find(item => item.targetProfile === active)
   if (!route) throw new Error(`No Desktop route for ${active}`)
   return {
-    request: (method, params = {}) => host.requestProfile(route, method, params),
+    request: (method, params = {}) => host.requestProfile(route, method, requestParams(method, params)),
     profile: route.targetProfile || route.profile
   }
 }
@@ -1219,7 +1226,7 @@ async function fetchLiveCards(sessionId, opts, connectionId, profile) {
   if (opts && opts.accountKey) {
     const match = /^openai-codex:([a-f0-9]{20})$/.exec(opts.accountKey)
     if (!match) return { cards: [], errors: ['Invalid opaque account target'] }
-    const target = await profileRequester(connectionId, profile)
+    const target = await profileRequester(connectionId, profile, sid)
     const result = await probeStockAccountUsage(target.request, { fresh: true, accountKey: match[1], profile: target.profile, disabled })
     return { cards: cardsFromAccountSnapshots(result.snapshots || []), errors: result.error ? [result.error] : [] }
   }
@@ -1228,7 +1235,7 @@ async function fetchLiveCards(sessionId, opts, connectionId, profile) {
     return { cards: [], errors: [], hadSession: Boolean(sid), haveAccountRpc: false }
   }
   const haveAccountRpc = false
-  const target = await profileRequester(connectionId, profile)
+  const target = await profileRequester(connectionId, profile, sid)
   const request = target.request
 
   // account.usage and /usage may resolve/refresh OAuth. Only the copied read-only
