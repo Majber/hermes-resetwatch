@@ -127,7 +127,7 @@ const other={id:'other',accountKey:'openai-codex:'+'b'.repeat(20),snapshot:{fetc
 const key=cards[0].accountKey, next={cards:[{id:'new',accountKey:key,snapshot:snap}],errors:[]};
 const merged=merge({cards:[...cards,other],errors:[]},next,key);assert.equal(merged.cards[1],other);assert.equal(merged.cards[1].snapshot.fetched_at,123);
 (async()=>{const calls=[];sdk.host.request=async(method,params)=>{calls.push([method,params]); if(method==='config.show')return {sections:[{rows:[['Config File','/fixture/config.yaml']]}]};if(method==='shell.exec')return {code:0,stdout:JSON.stringify([{...snap}])};throw Error('unrelated RPC '+method)};
-const data=await fetch('',{accountKey:key,fresh:true},'', '');assert.equal(data.cards[0].accountKey,key);assert.equal(calls.filter(c=>c[0]==='shell.exec').length,1);assert.ok(calls.find(c=>c[0]==='shell.exec')[1].command.includes('--account-key='+snap.account_key));
+const data=await fetch('fixture-runtime-session',{accountKey:key,fresh:true},'', '');assert.equal(data.cards[0].accountKey,key);assert.equal(calls.filter(c=>c[0]==='shell.exec').length,1);assert.equal(calls.find(c=>c[0]==='shell.exec')[1].session_id,'fixture-runtime-session');assert.ok(calls.find(c=>c[0]==='shell.exec')[1].command.includes('--account-key='+snap.account_key));
 const before=calls.length;const bad=await fetch('',{accountKey:key+';evil'},'','');assert.ok(bad.errors.length);assert.equal(calls.length,before);
 console.log('JS fixtures: reset floor/coalescing/no-loop; Session/Weekly/both/unknown; target command and neighbor identity preserved');})().catch(e=>{console.error(e);process.exitCode=1});
 """
