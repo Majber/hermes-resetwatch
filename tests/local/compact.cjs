@@ -116,7 +116,7 @@ assert.equal(nodes(resolve(run('ProviderBlock({title:"Claude",cards:otherCards,n
   if(method==='shell.exec') return {code:0,stdout:JSON.stringify(fixtures)};
   return {};
  };
- const result=await run('fetchLiveCards("",{disabled:["nous","openrouter"]},"","default")');
+ const result=await run('fetchLiveCards("fixture-session",{disabled:["nous","openrouter"]},"","default")');
  const keys=new Set(result.cards.map(card=>card.accountKey));
  assert.equal(keys.size,7);
  assert.equal(calls.some(call=>['account.usage','slash.exec','usage.bars','subscription.state'].includes(call.method)),false);

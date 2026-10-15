@@ -50,7 +50,7 @@ console.log('Rejected credentials never imply historical quota is current');
     if (method==='shell.exec') return {code:0,stdout:JSON.stringify([context.fixture,context.dead])};
     return {};
   };
-  const result=await run('fetchLiveCards("",{},"","default")');
+  const result=await run('fetchLiveCards("fixture-session",{},"","default")');
   assert.equal(calls.some(c=>c.method==='account.usage'||c.method==='slash.exec'),false,'read-only copy must not call token-resolving RPCs');
   const shells=calls.filter(c=>c.method==='shell.exec');
   assert.ok(shells.length);
