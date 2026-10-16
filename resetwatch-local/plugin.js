@@ -1055,21 +1055,32 @@ async function profileRequester(connectionId, profile, sessionId) {
   if (connectionId === null) throw new Error('Could not find the owner of the focused session')
   // The canonical owner requires a local session for shell.exec. Capture the
   // fetch's runtime id, not changing UI focus, for every pinned probe page.
-  const requestParams = (method, params) => {
-    if (method !== 'shell.exec') return params
-    if (!sessionId) throw new Error('Brak aktywnej sesji do odczytu Resetwatch Local. Otwórz lokalną rozmowę i spróbuj ponownie.')
-    return { ...params, session_id: sessionId }
+  let shellUsesSession = !!sessionId
+  const invoke = async (send, method, params) => {
+    if (method !== 'shell.exec') return send(method, params)
+    try {
+      return await send(method, shellUsesSession ? { ...params, session_id: sessionId } : params)
+    } catch (error) {
+      // Retry only a schema rejection: the command was not executed. Never
+      // retry command failures, timeouts or auth errors (could duplicate work).
+      const message = String(error && error.message || error || '')
+      if (shellUsesSession && /invalid.params/i.test(message) && /session_id/i.test(message) && /extra inputs are not permitted|extra_forbidden/i.test(message)) {
+        shellUsesSession = false
+        return send(method, params)
+      }
+      throw error
+    }
   }
   const active = String(profile || '').trim()
   if (!active || !connectionId || typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
-    return { request: (method, params = {}) => host.request(method, requestParams(method, params)), profile: active }
+    return { request: (method, params = {}) => invoke((name, args) => host.request(name, args), method, params), profile: active }
   }
   const routes = await host.profileRoutes()
   const sourceRoutes = routes.filter(item => item && item.connectionId === connectionId)
   const route = sourceRoutes.find(item => item.profile === active) || sourceRoutes.find(item => item.targetProfile === active)
   if (!route) throw new Error(`No Desktop route for ${active}`)
   return {
-    request: (method, params = {}) => host.requestProfile(route, method, requestParams(method, params)),
+    request: (method, params = {}) => invoke((name, args) => host.requestProfile(route, name, args), method, params),
     profile: route.targetProfile || route.profile
   }
 }

@@ -1,0 +1,19 @@
+const fs = require('node:fs');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync(require('node:path').join(__dirname, '../../resetwatch-local/plugin.js'), 'utf8');
+const helper = source.slice(source.indexOf('async function profileRequester('), source.indexOf('// shell.exec returns only'));
+(async () => {
+ const context = {host: {}}; vm.createContext(context); vm.runInContext(helper, context);
+ const calls = [];
+ context.host.request = async (method, params) => {calls.push(params); if ('session_id' in params) throw Error('invalid params for shell.exec: session_id: Extra inputs are not permitted'); return {code:0};};
+ const modern = await context.profileRequester('', '', 'fixture');
+ await modern.request('shell.exec', {command:'fixture'});
+ await modern.request('shell.exec', {command:'page2'});
+ assert.equal(calls.length, 3); assert.equal(calls[0].session_id,'fixture'); assert.ok(!('session_id' in calls[1])); assert.ok(!('session_id' in calls[2]));
+ context.host.request = async (_, p) => {assert.equal(p.session_id,'fixture'); return {code:0};};
+ await (await context.profileRequester('', '', 'fixture')).request('shell.exec', {command:'fixture'});
+ let n=0; context.host.request = async () => {n++; throw Error('permission denied');};
+ await assert.rejects((await context.profileRequester('', '', 'fixture')).request('shell.exec', {command:'fixture'})); assert.equal(n,1);
+ console.log('PASS one fixture: both shell schemas, paging, no retry on permission failure');
+})().catch(error=>{console.error(error);process.exitCode=1;});
