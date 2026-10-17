@@ -20,7 +20,7 @@ const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
 const VERSION = '0.2.22-local.3'
 // Update both files' build stamps together when deploying a new paired build.
-const LOCAL_BUILD = '2026-10-15-session-rpc-1'
+const LOCAL_BUILD = '2026-10-17-profile-fallback-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.

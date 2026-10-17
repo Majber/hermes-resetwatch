@@ -102,7 +102,7 @@ USER_AGENT = "resetwatch"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
-LOCAL_BUILD = '2026-10-15-session-rpc-1'
+LOCAL_BUILD = '2026-10-17-profile-fallback-1'
 
 CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_TOKEN_SKEW_SECONDS = 120
@@ -2109,7 +2109,11 @@ def _pool_entries(provider: str) -> list[dict]:
     name = str(provider or "").strip()
     if not name:
         return []
-    for home in _hermes_homes():
+    homes = _hermes_homes()
+    # Follow Hermes' per-provider pool fallback without sharing profile caches/env.
+    if _profile_home is not None and _profile_home.parent.name == "profiles":
+        homes = list(dict.fromkeys([*homes, _profile_home.parent.parent]))
+    for home in homes:
         store = _read_auth_store(home / "auth.json")
         if not store:
             continue
