@@ -3984,7 +3984,9 @@ def main() -> int:
                 "resetwatch",
                 None,
                 [],
-                [f"probe failed: {type(exc).__name__}: {exc}"],
+                # Exception text may contain credential-bearing URLs or bodies.
+                # Keep the crash card useful without serializing that payload.
+                [f"probe failed: {type(exc).__name__}"],
             )
         ]
         try:
