@@ -14,6 +14,9 @@ const helper = source.slice(source.indexOf('async function profileRequester('), 
  context.host.request = async (_, p) => {assert.equal(p.session_id,'fixture'); return {code:0};};
  await (await context.profileRequester('', '', 'fixture')).request('shell.exec', {command:'fixture'});
  let n=0; context.host.request = async () => {n++; throw Error('permission denied');};
- await assert.rejects((await context.profileRequester('', '', 'fixture')).request('shell.exec', {command:'fixture'})); assert.equal(n,1);
+ await assert.rejects((await context.profileRequester('', '', 'fixture')).request('shell.exec', {command:'fixture'}), error => error.shellRefused === true); assert.equal(n,1);
+ context.host.request = async () => {throw Error('invalid_params: session_id required');};
+ await assert.rejects((await context.profileRequester('', '', '')).request('shell.exec', {command:'fixture'}), error => error.shellRefused && /Otwórz lokalną rozmowę/.test(error.message));
+ assert.ok(source.includes('if (error && error.shellRefused) return { snapshots: null, error: error.message }'));
  console.log('PASS one fixture: both shell schemas, paging, no retry on permission failure');
 })().catch(error=>{console.error(error);process.exitCode=1;});

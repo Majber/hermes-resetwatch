@@ -1055,6 +1055,14 @@ async function profileRequester(connectionId, profile, sessionId) {
   if (connectionId === null) throw new Error('Could not find the owner of the focused session')
   // The canonical owner requires a local session for shell.exec. Capture the
   // fetch's runtime id, not changing UI focus, for every pinned probe page.
+  const shellRefusal = error => {
+    const message = String(error && error.message || error || '')
+    if (!/invalid.params|extra_forbidden|permission.denied|forbidden|not.authorized/i.test(message)) return error
+    const detail = !sessionId && /invalid.params|session_id/i.test(message)
+      ? 'Otwórz lokalną rozmowę i odśwież dane — ten backend wymaga aktywnej sesji.'
+      : 'Backend odrzucił parametry lub uprawnienia odczytu. Ponawianie z innym Pythonem nie pomoże.'
+    return Object.assign(new Error(`Odmowa shell.exec: ${detail}`), { shellRefused: true })
+  }
   let shellUsesSession = !!sessionId
   const invoke = async (send, method, params) => {
     if (method !== 'shell.exec') return send(method, params)
@@ -1066,9 +1074,10 @@ async function profileRequester(connectionId, profile, sessionId) {
       const message = String(error && error.message || error || '')
       if (shellUsesSession && /invalid.params/i.test(message) && /session_id/i.test(message) && /extra inputs are not permitted|extra_forbidden/i.test(message)) {
         shellUsesSession = false
-        return send(method, params)
+        try { return await send(method, params) }
+        catch (fallbackError) { throw shellRefusal(fallbackError) }
       }
-      throw error
+      throw shellRefusal(error)
     }
   }
   const active = String(profile || '').trim()
@@ -1210,6 +1219,7 @@ async function probeStockAccountUsage(request, opts) {
               return { snapshots: null, error: errorMessage(error, 'probe snapshot failed') }
             }
           } catch (error) {
+            if (error && error.shellRefused) return { snapshots: null, error: error.message }
             failures.push({ kind: 'failed', message: errorMessage(error, 'probe failed') })
           }
         }
