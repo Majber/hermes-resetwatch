@@ -20,7 +20,7 @@ const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
 const VERSION = '0.2.22-local.3'
 // Update both files' build stamps together when deploying a new paired build.
-const LOCAL_BUILD = '2026-10-17-profile-fallback-1'
+const LOCAL_BUILD = '2026-10-22-monthly-window-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -667,7 +667,7 @@ function observedMillis(value) {
 }
 
 function mainQuotaWindows(snap) {
-  return (snap.windows || []).filter(window => providerKey(snap.provider) !== 'openai-codex' || /^(Session|Weekly)$/i.test(window.label))
+  return (snap.windows || []).filter(window => providerKey(snap.provider) !== 'openai-codex' || /^(Session|Weekly|30 days)$/i.test(window.label))
 }
 
 function exhaustedWindow(window) {
@@ -715,8 +715,8 @@ function mergeAccountRefresh(previous, next, accountKey) {
 function deriveAccountStatus(snap, nowMs) {
   const exhausted = mainQuotaWindows(snap).filter(exhaustedWindow)
   const limited = snap.quota_state === 'limit_reached' || snap.limit_reached === true || exhausted.length > 0
-  const scopes = new Set(exhausted.map(window => String(window.label).toLowerCase()).filter(label => ['session', 'weekly'].includes(label)))
-  const blockScope = !limited ? null : scopes.size === 2 ? 'both' : scopes.size === 1 ? [...scopes][0] : 'unknown'
+  const scopes = new Set(exhausted.map(window => String(window.label).toLowerCase()).filter(label => ['session', 'weekly', '30 days'].includes(label)))
+  const blockScope = !limited ? null : scopes.size === 2 && scopes.has('session') && scopes.has('weekly') ? 'both' : scopes.size === 1 ? [...scopes][0] : 'unknown'
   const resets = exhausted.map(window => Date.parse(window.reset_at))
   const recoveryAt = exhausted.length && resets.every(ms => Number.isFinite(ms) && ms > nowMs) ? Math.max(...resets) : null
   // Auth describes the last check/local inspection, never quota age or inference.
@@ -760,7 +760,7 @@ const LOCAL_TEXT = {
     heading: 'Account status', windows: 'Quota windows', history: 'Historical quota',
     count: 'accounts', help: 'Separate local copy. Status and quota are observations, not a guarantee of model availability.',
     check: 'Check status / Refresh usage', refreshing: 'Checking…', cooldown: 'Wait a minute between read-only checks',
-    checkAccount: 'Refresh this account', block_session: 'Limit: Session', block_weekly: 'Limit: Weekly', block_both: 'Limit: Session + Weekly', block_unknown: 'Limit: scope unknown', recovery: 'Predicted recovery', recoveryUnknown: 'Recovery time unknown',
+    checkAccount: 'Refresh this account', block_session: 'Limit: Session', 'block_30 days': 'Limit: 30 days', block_weekly: 'Limit: Weekly', block_both: 'Limit: Session + Weekly', block_unknown: 'Limit: scope unknown', recovery: 'Predicted recovery', recoveryUnknown: 'Recovery time unknown',
     account: 'Account / status', session: 'Session', weekly: 'Weekly', observation: 'Last observation',
     details: 'Details', closeDetails: 'Hide details', noObservation: 'No observation', historicalShort: 'hist.',
     bankedResets: 'Resets', usableResets: 'now', bankedResetsHelp: 'Vendor-reported banked and applicable reset counts at the last observation. ? means unknown; 0 usable does not mean the banked reset is lost. No reason for eligibility is inferred, and no reset is applied here.',
@@ -809,7 +809,7 @@ const LOCAL_TEXT = {
     heading: 'Stan kont', windows: 'Okna limitów', history: 'Historyczny odczyt limitu',
     count: 'kont', help: 'Oddzielna kopia lokalna. Stan i limity to odczyty, nie gwarancja dostępności modelu.',
     check: 'Sprawdź stan / Odśwież zużycie', refreshing: 'Sprawdzanie…', cooldown: 'Odczekaj minutę między sprawdzeniami tylko do odczytu',
-    checkAccount: 'Odśwież to konto', block_session: 'Limit: Sesja', block_weekly: 'Limit: Tydzień', block_both: 'Limit: Sesja + Tydzień', block_unknown: 'Limit: nieznany zakres', recovery: 'Przewidywany powrót', recoveryUnknown: 'Czas powrotu nieznany',
+    checkAccount: 'Odśwież to konto', block_session: 'Limit: Sesja', 'block_30 days': 'Limit: 30 dni', block_weekly: 'Limit: Tydzień', block_both: 'Limit: Sesja + Tydzień', block_unknown: 'Limit: nieznany zakres', recovery: 'Przewidywany powrót', recoveryUnknown: 'Czas powrotu nieznany',
     account: 'Konto / stan', session: 'Sesja', weekly: 'Tydzień', observation: 'Dostępność / odczyt',
     details: 'Szczegóły', closeDetails: 'Ukryj szczegóły', noObservation: 'Brak odczytu', historicalShort: 'hist.',
     bankedResets: 'W zapasie', usableResets: 'do użycia', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
@@ -1632,6 +1632,7 @@ function OverviewQuota({ snap, label, state, freshness, nowMs }) {
   const t = useLocalText()
   const mode = useValue($displayMode)
   const window = (snap.windows || []).find(item => String(item.label).toLowerCase() === label.toLowerCase())
+    || (label === 'Weekly' ? (snap.windows || []).find(item => item.label === '30 days') : null)
   const card = { remaining: window && window.remaining_percent, used: window && window.used_percent }
   const percent = quotaPercent(card, mode)
   const remaining = quotaPercent(card, 'remaining')
@@ -1639,6 +1640,7 @@ function OverviewQuota({ snap, label, state, freshness, nowMs }) {
   const banked = label === 'Weekly' ? bankedResetCount(snap) : null
   return jsxs('td', { style: overviewCellStyle, children: [
     jsxs('div', { style: { display: 'flex', alignItems: 'center', gap: 6, whiteSpace: 'nowrap', lineHeight: '20px' }, children: [
+      window && window.label === '30 days' ? jsx('span', { style: { fontSize: '13px', color: text.secondary }, children: '30 dni' }) : null,
       jsx('strong', { style: { minWidth: 40, flexShrink: 0, color: toneColor(toneForRemaining(remaining)) }, children: percent === null ? '—' : `${percent}%` }),
       percent === null ? null : jsx('span', { style: { display: 'inline-flex', flex: '1 1 0', minWidth: 92 }, children: jsx(UsageBar, { remaining, percent, label: `${t(label === 'Session' ? 'session' : 'weekly')}: ${percent}% ${t(mode === 'used' ? 'usedMode' : 'remainingMode')}` }) }),
       historical && percent !== null ? jsx('span', { title: t('history'), style: { fontSize: '13px', color: text.secondary }, children: t('historicalShort') }) : null
@@ -1755,7 +1757,7 @@ function AccountOverviewTable({ accounts, nowMs, accountSort, refreshAccount, re
       jsx('colgroup', { children: [['account', '20%'], ['session', '24%'], ['weekly', '29%'], ['observation', '27%']]
         .map(([column, width]) => jsx('col', { 'data-account-column': column, style: { width } }, column)) }),
       jsx('thead', { children: jsx('tr', { children: ['account', 'session', 'weekly', 'observation'].map(label => jsx('th', {
-        scope: 'col', style: { ...overviewCellStyle, padding: '5px 8px', color: text.secondary, fontWeight: 500, whiteSpace: 'nowrap' }, children: t(label)
+        scope: 'col', style: { ...overviewCellStyle, padding: '5px 8px', color: text.secondary, fontWeight: 500, whiteSpace: 'nowrap' }, children: label === 'weekly' && [...accounts.values()].some(account => (account.snap.windows || []).some(window => window.label === '30 days')) ? 'Tydzień / 30 dni' : t(label)
       }, label)) }) }),
       jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key, refreshAccount, refreshDisabled, busyAccount }, key)) })
     ]

@@ -102,7 +102,7 @@ USER_AGENT = "resetwatch"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
-LOCAL_BUILD = '2026-10-17-profile-fallback-1'
+LOCAL_BUILD = '2026-10-22-monthly-window-1'
 
 CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_TOKEN_SKEW_SECONDS = 120
@@ -1931,6 +1931,8 @@ def _codex_window_label(window: dict, fallback: str) -> str:
     seconds = window.get("limit_window_seconds")
     if not isinstance(seconds, (int, float)) or isinstance(seconds, bool) or seconds <= 0:
         return fallback
+    if seconds == 30 * 24 * 3600:
+        return "30 days"
     return "Weekly" if seconds >= _CODEX_WEEKLY_SECONDS else "Session"
 
 
