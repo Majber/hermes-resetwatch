@@ -20,7 +20,7 @@ const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
 const VERSION = '0.2.22-local.3'
 // Update both files' build stamps together when deploying a new paired build.
-const LOCAL_BUILD = '2026-10-22-monthly-window-1'
+const LOCAL_BUILD = '2026-10-26-upstream-security-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -974,9 +974,20 @@ function hermesHomeCandidates(fromConfig) {
   return out
 }
 
-function quoteShell(path) {
-  // shell.exec takes a single command string (no argv). Quote for spaces.
-  return `"${String(path).replace(/"/g, '\\"')}"`
+// Only these exact interpreter tokens intentionally expand on the backend.
+const SHELL_RUNTIME_PYTHONS = new Set(['$HERMES_PYTHON', '%HERMES_PYTHON%'])
+
+function shellSafe(value) {
+  // No portable escaping exists inside double quotes across sh and cmd.exe.
+  return !/["$`%!\r\n\0]/.test(String(value))
+}
+
+function quoteShell(value) {
+  const text = String(value)
+  if (!shellSafe(text) && !SHELL_RUNTIME_PYTHONS.has(text)) {
+    throw new Error('Niebezpieczna ścieżka probe.py: znaki rozwijane przez powłokę są niedozwolone.')
+  }
+  return `"${text}"`
 }
 
 function probePythonCandidates(home) {
@@ -1057,8 +1068,8 @@ async function profileRequester(connectionId, profile, sessionId) {
   // fetch's runtime id, not changing UI focus, for every pinned probe page.
   const shellRefusal = error => {
     const message = String(error && error.message || error || '')
-    if (!/invalid.params|extra_forbidden|permission.denied|forbidden|not.authorized/i.test(message)) return error
-    const detail = !sessionId && /invalid.params|session_id/i.test(message)
+    if (!/invalid[ _.-]*param(?:eter)?s|extra[_ -]forbidden|extra inputs are not permitted|(?:unexpected|extra)\s+(?:input|field|parameter)s?|permission.denied|forbidden|not.authorized/i.test(message)) return error
+    const detail = !sessionId && /invalid[ _.-]*param(?:eter)?s|session_id/i.test(message)
       ? 'Otwórz lokalną rozmowę i odśwież dane — ten backend wymaga aktywnej sesji.'
       : 'Backend odrzucił parametry lub uprawnienia odczytu. Ponawianie z innym Pythonem nie pomoże.'
     return Object.assign(new Error(`Odmowa shell.exec: ${detail}`), { shellRefused: true })
@@ -1072,7 +1083,7 @@ async function profileRequester(connectionId, profile, sessionId) {
       // Retry only a schema rejection: the command was not executed. Never
       // retry command failures, timeouts or auth errors (could duplicate work).
       const message = String(error && error.message || error || '')
-      if (shellUsesSession && /invalid.params/i.test(message) && /session_id/i.test(message) && /extra inputs are not permitted|extra_forbidden/i.test(message)) {
+      if (shellUsesSession && /\bsession_id\b/i.test(message) && /extra inputs are not permitted|extra[_ -]forbidden|(?:unexpected|extra)\s+(?:input|field|parameter)s?/i.test(message) && !/timeout|timed out|permission.denied|not.authorized/i.test(message)) {
         shellUsesSession = false
         try { return await send(method, params) }
         catch (fallbackError) { throw shellRefusal(fallbackError) }
@@ -1138,8 +1149,10 @@ async function probeNextSlice(request, python, probe, flags, token, offset) {
 async function probeStockAccountUsage(request, opts) {
   try {
     const shown = await request('config.show', {})
-    const homes = hermesHomeCandidates(hermesHomeFromConfig(shown))
-    if (!homes.length) return { snapshots: null, error: 'Could not find Hermes home for probe.py' }
+    const found = hermesHomeCandidates(hermesHomeFromConfig(shown))
+    if (!found.length) return { snapshots: null, error: 'Could not find Hermes home for probe.py' }
+    const homes = found.filter(shellSafe)
+    if (!homes.length) return { snapshots: null, error: 'Niebezpieczna ścieżka probe.py: znaki rozwijane przez powłokę są niedozwolone.' }
     const profileArg = String((opts && opts.profile) || '').trim()
     if (opts && opts.accountKey && !/^[a-f0-9]{20}$/.test(opts.accountKey)) return { snapshots: null, error: 'Invalid opaque account key' }
     if (profileArg && !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profileArg)) {

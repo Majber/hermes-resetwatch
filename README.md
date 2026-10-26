@@ -2,7 +2,7 @@
 
 This fork's default branch is **`resetwatch-local`**. The version to install is
 [`resetwatch-local/plugin.js`](resetwatch-local/plugin.js) together with
-[`resetwatch-local/probe.py`](resetwatch-local/probe.py), version **0.2.21-local.1**.
+[`resetwatch-local/probe.py`](resetwatch-local/probe.py), version **0.2.22-local.3**.
 It is a standalone Hermes Desktop plugin, not a Hermes core modification.
 
 ## What is different
@@ -67,8 +67,8 @@ ID/folder: `resetwatch-local`; page: `/resetwatch-local`; cache namespace:
 settings. Disable the original in Desktop if you want only the Local page.
 
 **Do not install the root `plugin.js` / `probe.py` or `catalog/` for this version.**
-They are unchanged upstream reference files from the base commit and retain the
-original identity. We deliberately keep Local in its own directory to avoid
+They are upstream reference files (catalog 0.2.25 plus current main) and retain
+the original identity. We deliberately keep Local in its own directory to avoid
 mixing it with upstream's catalog/updater packaging. This fork does not publish
 a Local catalog package yet. [The historical upstream README](docs/UPSTREAM.md)
 is reference material, not these installation instructions.
@@ -91,10 +91,22 @@ last successful observation. No tokens are printed by the probe.
 
 There is **no in-app updater or automatic upstream update in Local**. `main`
 retains upstream history; `upstream` is the original repository remote.
-This branch starts from **`d460334db633fbaa91f0f8b96679e8463bad2a04`** (catalog 0.2.21),
-matching the deployed implementation rather than pretending to incorporate newer
-upstream changes. Its captured source hashes are in
+Local started from **`d460334db633fbaa91f0f8b96679e8463bad2a04`** (catalog 0.2.21).
+The reference tree now incorporates catalog 0.2.25 (`248af31`) and upstream main
+(`5b6c9c6`), without replacing Local's source/UI with the reference implementation.
+Local deliberately adopts PR54 shell-path validation and PR55 Grok host pinning;
+only exact Hermes interpreter variable tokens expand, not configured paths.
+Shell session fallback requires an explicit extra `session_id` field rejection;
+timeouts, missing parameters and authentication failures are never retried bare.
+Local's captured source hashes are in
 [`resetwatch-local/SNAPSHOT.json`](resetwatch-local/SNAPSHOT.json).
+
+Codex keys and saved aliases remain unchanged for each host/account with at most
+one known JWT subject. Only a real collision between distinct workspace members
+splits that identity into subject-scoped rows. Ambiguous old aliases and historical
+quota remain stored under the old key but are not assigned to any split member;
+set a new alias for each member in that exceptional case. JWT claims are grouping
+metadata only, not authentication validation. No alias/settings migration is run.
 
 Review upstream changes before adopting them. `git fetch upstream` does not
 change Local. Merge/cherry-pick only deliberately, then rerun Local tests and

@@ -31,7 +31,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 
 # Cap how often probe hits vendor APIs (success or empty). Claude 429 may
@@ -102,7 +102,7 @@ USER_AGENT = "resetwatch"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
-LOCAL_BUILD = '2026-10-22-monthly-window-1'
+LOCAL_BUILD = '2026-10-26-upstream-security-1'
 
 CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_TOKEN_SKEW_SECONDS = 120
@@ -1171,6 +1171,24 @@ def _grok_access_context(*, previous: Optional[str] = None) -> Optional[tuple[st
     return None
 
 
+def _grok_proxy_base() -> str:
+    """Accept overrides only on HTTPS Grok-owned hosts before sending a bearer."""
+    raw = (os.environ.get("GROK_CLI_CHAT_PROXY_BASE_URL") or "").strip().rstrip("/")
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return ""
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https" or parts.username is not None or parts.password is not None or port not in (None, 443):
+        return ""
+    if host in ("grok.com", "x.ai") or host.endswith((".grok.com", ".x.ai")):
+        return raw
+    return ""
+
+
 def _grok_proxy_headers(token: str, user_id: str) -> dict[str, str]:
     # Private Grok CLI billing API. Best-effort; xAI may change or reject this.
     return {
@@ -1224,7 +1242,7 @@ def _fetch_grok_account_usage() -> Optional[dict]:
         return None
     token, user_id = context
     headers = _grok_proxy_headers(token, user_id)
-    base = (os.environ.get("GROK_CLI_CHAT_PROXY_BASE_URL") or "").strip().rstrip("/")
+    base = _grok_proxy_base()
     billing_url = f"{base}/billing?format=credits" if base else GROK_BILLING_URL
     settings_url = f"{base}/settings" if base else GROK_SETTINGS_URL
     with httpx.Client(timeout=HTTP_TIMEOUT) as client:
@@ -2157,13 +2175,15 @@ def _credential_state(entry: dict, token: str) -> str:
 
 def _codex_pool_accounts() -> list[dict]:
     """Inventory first, fetch eligibility second. Never discard an unhealthy login."""
-    from urllib.parse import urlsplit
     entries = list(_codex_pool_entries())
     loaded = _read_codex_cli_auth()
     if loaded:
         _, _, tokens = loaded
         entries.append({**tokens, "id": "codex-cli", "source": "codex-cli"})
-    groups: dict[tuple, dict] = {}
+    # Only disambiguate actual workspace-member collisions. A unique subject
+    # retains the preexisting host/account key, so aliases/caches do not move.
+    subjects: dict[tuple, set[str]] = {}
+    prepared = []
     for index, entry in enumerate(entries):
         token = str(entry.get("access_token") or "").strip()
         account_id = (_codex_account_id_from_token(token) or str(entry.get("account_id") or entry.get("chatgpt_account_id") or "").strip() or None)
@@ -2174,12 +2194,22 @@ def _codex_pool_accounts() -> list[dict]:
             host = f"{host}:{route.port}"
         # Unknown identities stay credential-scoped; do not group masked labels.
         identity = account_id or str(entry.get("id") or "").strip() or hashlib.sha256((token or f"missing:{index}").encode()).hexdigest()
-        group_key = (host, identity)
+        subject = str(_jwt_claims(token).get("sub") or "").strip() if account_id else ""
+        prepared.append((entry, token, account_id, base, host, identity, subject))
+        if account_id and subject:
+            subjects.setdefault((host, identity), set()).add(subject)
+    groups: dict[tuple, dict] = {}
+    for entry, token, account_id, base, host, identity, subject in prepared:
+        collision = len(subjects.get((host, identity), ())) > 1
+        # Ambiguous legacy observations/aliases cannot safely be attributed to
+        # a particular member; keep them stored but do not reuse their key.
+        scoped_identity = identity + "\0subject\0" + subject if collision else identity
+        group_key = (host, scoped_identity)
         if group_key not in groups:
             groups[group_key] = {
                 "account_id": account_id, "base_url": base, "source_host": host,
                 "label": _codex_card_label(entry, token),
-                "key": hashlib.sha256((host + "\0" + identity).encode()).hexdigest()[:20],
+                "key": hashlib.sha256((host + "\0" + scoped_identity).encode()).hexdigest()[:20],
                 "candidates": [], "grant_states": {},
             }
         account = groups[group_key]
