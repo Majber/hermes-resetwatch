@@ -60,7 +60,7 @@ function load({ modern = true, lifecycle = false, withQueryClient = true, quickU
       if (!(index in states)) states[index] = value
       return [states[index], next => { states[index] = typeof next === 'function' ? next(states[index]) : next }]
     }, jsx, jsxs: jsx })
-  vm.runInContext(source + '\nglobalThis.api = { clampPercent, quotaPercent, formatReset, cardsFromAccountSnapshots, liveQueryKey, readQuotaCache, saveQuotaCache, QuotaRing, fetchLiveCards, useLiveCardsQuery, QuickUsage, QuickUsageSlot, saveQuickUsage, checkedTime, $quickOpen, $displayMode };', context)
+  vm.runInContext(source + '\nglobalThis.api = { clampPercent, quotaPercent, formatReset, cardsFromAccountSnapshots, liveQueryKey, readQuotaCache, saveQuotaCache, QuotaRing, fetchLiveCards, useLiveCardsQuery, QuickUsage, QuickUsageSlot, saveQuickUsage, checkedTime, probeObservedAt, $quickOpen, $displayMode };', context)
   context.plugin.register({ storage: { get: (key, fallback) => saved.has(key) ? saved.get(key) : fallback,
     set: (key, value) => saved.set(key, value) }, onDispose: fn => disposers.push(fn),
     registerMany: rows => registered.push(...rows) })
@@ -355,9 +355,54 @@ test('the chip shows the window with the least left', () => {
   api.$displayMode.set('remaining')
   const trigger = api.QuickUsage().props.children[0].props.children
   assert.equal(trigger.props.children[1], '4%')
-  assert(trigger.props.title.endsWith(`${low.label}, 4% left`))
+  assert.equal(trigger.props.title, `Resetwatch: ${[low.provider, low.label].filter(Boolean).join(' ')}, 4% left`)
   api.$displayMode.set('used')
   assert.equal(api.QuickUsage().props.children[0].props.children.props.children[1], '96%')
+})
+test('a pinned window wins, then the least left', () => {
+  const { context } = load()
+  const pick = context.chipQuotaCard
+  assert.equal(typeof pick, 'function')
+  const cards = [
+    { id: 'five-high', label: '5h', provider: 'OpenCode Go', remaining: 98, used: 2 },
+    { id: 'five-low', label: '5h', provider: 'Other', remaining: 90, used: 10 },
+    { id: 'weekly', label: 'Weekly', provider: 'OpenCode Go', remaining: 70, used: 30 },
+    { id: 'monthly', label: 'Monthly', provider: 'OpenCode Go', remaining: 87, used: 13 },
+    { id: 'session', label: 'Session', provider: 'Claude', remaining: null, used: null },
+    { id: 'broken', label: 'Weekly', provider: 'Broken', remaining: 1, used: 99, error: true }
+  ]
+  const id = label => pick(cards, label) && pick(cards, label).id
+  assert.equal(id(''), 'weekly')
+  assert.equal(id('5h'), 'five-low')
+  assert.equal(id('5H'), 'five-low')
+  assert.equal(id('weekly'), 'weekly')
+  assert.equal(id('Monthly'), 'monthly')
+  assert.equal(id('Session'), 'weekly')
+  assert.equal(id('Yearly'), 'weekly')
+  assert.equal(pick([], '5h'), null)
+  assert.equal(pick([{ id: 'bare', label: 'Session', remaining: null, used: null }], ''), null)
+  assert.equal(pick([
+    { id: 'first', label: 'Weekly', remaining: 10, used: 90 },
+    { id: 'second', label: 'Weekly', remaining: 10, used: 90 }
+  ], '').id, 'first')
+})
+test('a pinned window replaces the least-left chip until that label is gone', () => {
+  const { api, key, context } = load()
+  assert.equal(typeof context.saveChipWindow, 'function')
+  const cards = [
+    { id: 'five', source: 'live', provider: 'OpenCode Go', group: 'OpenCode Go', account: '', label: '5h', remaining: 98, used: 2, resetAt: null, resetText: '', detail: '' },
+    { id: 'month', source: 'live', provider: 'OpenCode Go', group: 'OpenCode Go', account: '', label: 'Monthly', remaining: 87, used: 13, resetAt: null, resetText: '', detail: '' }
+  ]
+  api.saveQuotaCache(key, { cards, errors: [], checkedAt: Date.now(), hadSession: true, haveAccountRpc: true })
+  const trigger = () => api.QuickUsage().props.children[0].props.children
+  assert.equal(trigger().props.children[1], '87%')
+  assert.equal(trigger().props.title, 'Resetwatch: OpenCode Go Monthly, 87% left')
+  context.saveChipWindow('5h')
+  assert.equal(trigger().props.children[1], '98%')
+  assert.equal(trigger().props.title, 'Resetwatch: OpenCode Go 5h, 98% left')
+  context.saveChipWindow('Yearly')
+  assert.equal(trigger().props.children[1], '87%')
+  assert.equal(trigger().props.title, 'Resetwatch: OpenCode Go Monthly, 87% left')
 })
 test('older checks show their date, not just a time', () => {
   const { api } = load()
@@ -366,4 +411,21 @@ test('older checks show their date, not just a time', () => {
   const later = api.checkedTime(checkedAt, checkedAt + 2 * 86400000)
   assert(sameDay && later.length > sameDay.length, `${later} should carry a date beyond ${sameDay}`)
   assert.equal(api.checkedTime(undefined, checkedAt), '')
+})
+test('probe cache hits report the vendor observation time, not the request time', () => {
+  const { api } = load()
+  const now = Date.parse('2030-01-01T12:10:00Z')
+  const observed = Date.parse('2030-01-01T12:04:00Z')
+  assert.equal(api.probeObservedAt([{ observed_at: observed / 1000 }, { observed_at: now / 1000 }], now), observed)
+  for (const snaps of [null, [], [{}], [{ observed_at: 'bad' }], [{ observed_at: now / 1000 + 60 }]]) {
+    assert.equal(api.probeObservedAt(snaps, now), now)
+  }
+})
+test('the saved popup snapshot keeps its observation time', () => {
+  const { api, key, payload } = load()
+  const observedAt = payload.checkedAt - 240000
+  api.saveQuotaCache(key, { ...payload, observedAt })
+  const cached = api.readQuotaCache(key)
+  assert.equal(cached.observedAt, observedAt)
+  assert.equal(cached.checkedAt, payload.checkedAt)
 })

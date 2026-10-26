@@ -19,7 +19,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'resetwatch'
 const PLUGIN_NAME = 'Resetwatch'
 const ROUTE = '/resetwatch'
-const VERSION = '0.2.22'
+const VERSION = '0.2.25'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -62,10 +62,14 @@ const EN = {
     remaining: 'Remaining %',
     used: 'Used %'
   },
+  chip: {
+    least: 'Least remaining'
+  },
   page: {
     subtitleLeft: 'How much is left, and when it comes back',
     subtitleUsed: 'How much is used, and when it resets',
     displayMode: 'Quota display mode',
+    chipWindow: 'Status bar window',
     gateway: state => `gateway ${state}`,
     gatewayChecked: (state, time) => `gateway ${state} · checked ${time}`,
     statusBar: 'Status bar',
@@ -74,7 +78,7 @@ const EN = {
     refreshing: 'Refreshing…',
     refreshWait: 'Wait a minute between refreshes',
     refreshHint: 'Skip the cache and ask every vendor again',
-    intro: 'Live rows are plans already signed in on this machine: Hermes OAuth first, then Claude Code, Codex, Cursor, Kimi, Grok, GLM, DeepSeek, OpenCode Go, Ollama Cloud, MiniMax, Novita, DeepInfra, AI Gateway, and Command Code when those CLIs, apps, or API keys are logged in. Kimi and GLM can also use Hermes Coding Plan API keys. Command Code uses COMMANDCODE_API_KEY or the cmd CLI login. Click a section name to fold it up.',
+    intro: 'Live rows are plans already signed in on this machine: Hermes OAuth first, then Claude Code, Codex, Cursor, Kimi, Grok, GLM, DeepSeek, OpenCode Go, Ollama Cloud, MiniMax, Novita, DeepInfra, AI Gateway, Command Code, and GitHub Copilot when those CLIs, apps, or API keys are logged in. Kimi and GLM can also use Hermes Coding Plan API keys. Command Code uses COMMANDCODE_API_KEY or the cmd CLI login. GitHub Copilot uses a GitHub login already on this machine. Click a section name to fold it up.',
     automatic: 'Automatic',
     allOff: 'All providers are off. Enable a provider in Providers and order to see live usage.',
     noWindows: 'No quota windows yet. Check Providers and order, sign into an enabled provider, then refresh.'
@@ -117,7 +121,7 @@ const EN = {
   },
   popup: {
     open: 'Open usage and reset clocks',
-    lowest: (name, percent) => `${PLUGIN_NAME}: lowest is ${name}, ${percent}% left`,
+    lowest: (name, percent) => `${PLUGIN_NAME}: ${name}, ${percent}% left`,
     idle: `${PLUGIN_NAME}: usage and reset clocks`,
     label: `${PLUGIN_NAME} usage`,
     usage: 'Usage',
@@ -159,6 +163,8 @@ const EN = {
     noHttpx: 'Found Python without httpx on this Gateway. Could not use the gateway runtime, backend HERMES_PYTHON/VIRTUAL_ENV, or home/PATH interpreters.',
     noProbe: 'probe.py not found in the standalone or combined-package installation on this Gateway',
     noPython: 'No working Python found on this Gateway to start probe.py (checked backend HERMES_PYTHON and home/PATH interpreters)',
+    shellRefused: reason => `shell.exec refused: ${reason}`,
+    shellNeedsSession: 'shell.exec refused: this Hermes runs probe.py only for a focused local session. Open a chat, then refresh.',
     probeRun: 'Could not run probe.py',
     probeNoPython: 'Could not run probe.py (no working Hermes Python)'
   }
@@ -222,6 +228,7 @@ const $now = atom(Date.now())
 const $missingState = atom(null)
 const $providerPreferences = atom({ disabled: [], order: [] })
 const $displayMode = atom('remaining')
+const $chipWindow = atom('')
 const $refreshUntil = atom({})
 const $freshRequests = atom({})
 const $refreshErrors = atom({})
@@ -300,7 +307,7 @@ function saveQuotaCache(key, payload) {
     used: card.used, resetAt: card.resetAt, resetText: card.resetText, detail: card.detail
   }))
   remember(QUOTA_CACHE_KEY, { ...freshQuotaCacheEntries(), [JSON.stringify(key)]: { cards, errors: [],
-    checkedAt: payload.checkedAt, hadSession: payload.hadSession, haveAccountRpc: payload.haveAccountRpc } })
+    checkedAt: payload.checkedAt, observedAt: observedTime(payload), hadSession: payload.hadSession, haveAccountRpc: payload.haveAccountRpc } })
 }
 
 function saveQuickUsage(on) {
@@ -387,6 +394,37 @@ function saveDisplayMode(value) {
   remember('display_mode', mode)
 }
 
+// Empty means the chip keeps today's rule: the window with the least left.
+function normalizeChipWindow(value) {
+  if (typeof value !== 'string') return ''
+  const label = value.trim()
+  if (!label || label.length > 80) return ''
+  return label
+}
+
+function saveChipWindow(value) {
+  const label = normalizeChipWindow(value)
+  $chipWindow.set(label)
+  remember('chip_window', label)
+}
+
+function chipWindowChoices(cards, selected) {
+  const choices = []
+  const seen = new Set()
+  for (const card of cards || []) {
+    if (!card || card.error) continue
+    const label = String(card.label || '').trim()
+    const key = label.toLowerCase()
+    if (!label || seen.has(key)) continue
+    seen.add(key)
+    choices.push(label)
+  }
+  const current = normalizeChipWindow(selected)
+  if (current && !seen.has(current.toLowerCase())) choices.push(current)
+  const value = choices.find(label => label.toLowerCase() === current.toLowerCase()) || ''
+  return { choices, value }
+}
+
 function quotaPercent(card, mode) {
   return normalizeDisplayMode(mode) === 'used'
     ? clampPercent(card.used) ?? remainingFromUsed(card.remaining)
@@ -463,6 +501,7 @@ function providerKey(name) {
   if (key === 'novita-ai' || key === 'novitaai') return 'novita'
   if (key === 'deep-infra') return 'deepinfra'
   if (key === 'ai-gateway' || key === 'vercel' || key === 'vercel-ai-gateway') return 'ai-gateway'
+  if (key === 'github-copilot' || key === 'github') return 'copilot'
   return key
 }
 
@@ -515,13 +554,16 @@ const PROVIDER_LABELS = {
   vercel: 'AI Gateway',
   'vercel-ai-gateway': 'AI Gateway',
   commandcode: 'Command Code',
+  copilot: 'GitHub Copilot',
+  'github-copilot': 'GitHub Copilot',
+  github: 'GitHub Copilot',
   nous: 'Nous'
 }
 
 const LIVE_PROVIDERS = [
   'nous', 'anthropic', 'openai-codex', 'openrouter', 'cursor', 'kimi', 'grok',
   'glm', 'deepseek', 'opencode-go', 'ollama', 'minimax', 'novita', 'deepinfra',
-  'ai-gateway', 'commandcode'
+  'ai-gateway', 'commandcode', 'copilot'
 ]
 
 function normalizeProviderPreferences(raw) {
@@ -945,6 +987,29 @@ async function profileRequester(connectionId, profile) {
   }
 }
 
+// Hermes main serves the session-scoped shell.exec ({ session_id, command }).
+// Older backends serve the sidecar variant, whose closed params refuse a
+// session_id, so retry bare once when the scoped call is refused.
+// A refusal is the same for every interpreter and path, so it is tagged and
+// ends the candidate search instead of being retried.
+async function shellExec(request, sid, command) {
+  const reason = error => String((error && error.message) || error || '')
+  const refused = message => Object.assign(new Error(message), { refused: true })
+  if (sid) {
+    try {
+      return await request('shell.exec', { command, session_id: sid })
+    } catch (error) {
+      if (!/invalid[ _]params|extra[ _]forbidden|extra inputs/i.test(reason(error))) throw refused(tr('errors.shellRefused', reason(error)))
+    }
+  }
+  try {
+    return await request('shell.exec', { command })
+  } catch (error) {
+    if (!sid && /invalid[ _]params|extra inputs/i.test(reason(error))) throw refused(tr('errors.shellNeedsSession'))
+    throw refused(tr('errors.shellRefused', reason(error)))
+  }
+}
+
 // shell.exec returns only the last 4000 characters of stdout. Each probe
 // invocation requests at most eight snapshots and probe.py also caps bytes.
 const PROBE_SLICE = 8
@@ -969,10 +1034,9 @@ function pinnedPage(text, expectedToken) {
   return parsed
 }
 
-async function probeNextSlice(request, python, probe, flags, token, offset) {
-  const result = await request('shell.exec', {
-    command: `${quoteShell(python)} ${quoteShell(probe)}${flags.replace(' --fresh', '')} --snapshot-token=${token} --slice=${offset}:${PROBE_SLICE}`
-  })
+async function probeNextSlice(request, sid, python, probe, flags, token, offset) {
+  const result = await shellExec(request, sid,
+    `${quoteShell(python)} ${quoteShell(probe)}${flags.replace(' --fresh', '')} --snapshot-token=${token} --slice=${offset}:${PROBE_SLICE}`)
   if (!result || result.code) {
     throw new Error((result && String(result.stderr || '').trim()) || (result ? `probe exit ${result.code}` : 'probe returned nothing'))
   }
@@ -1022,9 +1086,8 @@ async function probeStockAccountUsage(request, opts) {
           const probe = `${home}/${relativePath}`
           if (deadProbes.has(probe)) continue
           try {
-            const result = await request('shell.exec', {
-              command: `${quoteShell(python)} ${quoteShell(probe)}${flags} --pin-snapshot --slice=0:${PROBE_SLICE}`
-            })
+            const result = await shellExec(request, opts && opts.sessionId,
+              `${quoteShell(python)} ${quoteShell(probe)}${flags} --pin-snapshot --slice=0:${PROBE_SLICE}`)
             if (!result || result.code) {
               const err = result && result.stderr ? String(result.stderr).trim() : ''
               const kind = probeFailureKind(result)
@@ -1054,7 +1117,7 @@ async function probeStockAccountUsage(request, opts) {
               let offset = all.length
               // A short page can mean byte-budget exhaustion, not end of list.
               for (let page = 0; offset && page < 256; page++) {
-                const next = await probeNextSlice(request, python, probe, flags, first.snapshot_token, offset)
+                const next = await probeNextSlice(request, opts && opts.sessionId, python, probe, flags, first.snapshot_token, offset)
                 if (!next.length) break
                 all.push(...next)
                 offset += next.length
@@ -1067,6 +1130,7 @@ async function probeStockAccountUsage(request, opts) {
               return { snapshots: null, error: errorMessage(error, 'probe snapshot failed') }
             }
           } catch (error) {
+            if (error && error.refused) return { snapshots: null, error: error.message }
             failures.push({ kind: 'failed', message: errorMessage(error, 'probe failed') })
           }
         }
@@ -1083,6 +1147,22 @@ async function probeStockAccountUsage(request, opts) {
 
 function go(route) {
   if (typeof host.navigate === 'function') host.navigate(route)
+}
+
+// The probe can answer from its own cache, so the oldest vendor observation,
+// not the time of this request, is when the shown numbers were checked.
+function probeObservedAt(snapshots, now) {
+  let oldest = now
+  for (const snap of snapshots || []) {
+    const at = Number(snap && snap.observed_at) * 1000
+    if (Number.isFinite(at) && at > 0 && at < oldest) oldest = at
+  }
+  return oldest
+}
+
+function observedTime(payload) {
+  if (!payload) return undefined
+  return Number.isFinite(payload.observedAt) ? payload.observedAt : payload.checkedAt
 }
 
 async function fetchLiveCards(sessionId, opts, connectionId, profile) {
@@ -1145,7 +1225,7 @@ async function fetchLiveCards(sessionId, opts, connectionId, profile) {
 
   const probeResult = disabled.filter(key => key !== 'nous').length === LIVE_PROVIDERS.length - 1
     ? { snapshots: [], error: null }
-    : await probeStockAccountUsage(request, { cliOnly: haveAccountRpc, fresh, profile: target.profile, disabled })
+    : await probeStockAccountUsage(request, { cliOnly: haveAccountRpc, fresh, profile: target.profile, disabled, sessionId: sid })
   const probed = probeResult && probeResult.snapshots
   if (probeResult && probeResult.error && !(probed && probed.length)) {
     errors.push(probeResult.error)
@@ -1176,6 +1256,8 @@ async function fetchLiveCards(sessionId, opts, connectionId, profile) {
     }
     if (extra.length) cards.push(...cardsFromAccountSnapshots(extra))
   }
+  const checkedAt = Date.now()
+  const observedAt = probeObservedAt(probed, checkedAt)
 
   // Claude often comes from Hermes /usage when the probe has Codex/etc. but
   // no Anthropic row. Only skip that fallback once Claude is already present.
@@ -1201,7 +1283,7 @@ async function fetchLiveCards(sessionId, opts, connectionId, profile) {
     seen.add(card.id)
     unique.push(card)
   }
-  return { cards: arrangeProviderCards(unique, { disabled }), errors, hadSession: Boolean(sid), haveAccountRpc, checkedAt: Date.now() }
+  return { cards: arrangeProviderCards(unique, { disabled }), errors, hadSession: Boolean(sid), haveAccountRpc, checkedAt, observedAt }
 }
 
 function SmallButton({ onClick, children, active, title, disabled }) {
@@ -1736,6 +1818,7 @@ function PluginPageContent() {
   const nowMs = useValue($now)
   const clocks = useValue($clocks)
   const displayMode = useValue($displayMode)
+  const chipWindow = useValue($chipWindow)
   const [adding, setAdding] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [liveOpen, toggleLive] = useSectionOpen('live')
@@ -1744,10 +1827,15 @@ function PluginPageContent() {
   const [cooldownUntil, setCooldownUntil] = useState(0)
   const coolingDown = useCoolingDown(Math.max(cooldownUntil, live.cooldownUntil || 0))
   const payload = live.data || { cards: [], errors: [], hadSession: false }
-  const groups = useMemo(
-    () => groupLiveCards(arrangeProviderCards(payload.cards, preferences)).filter(group => group.cards.length),
+  const cards = useMemo(
+    () => arrangeProviderCards(payload.cards, preferences),
     [payload.cards, preferences]
   )
+  const groups = useMemo(
+    () => groupLiveCards(cards).filter(group => group.cards.length),
+    [cards]
+  )
+  const chipChoices = chipWindowChoices(cards, chipWindow)
 
   useEffect(() => {
     $now.set(Date.now())
@@ -1810,10 +1898,27 @@ function PluginPageContent() {
                   jsx('option', { value: 'used', children: t('mode.used') })
                 ]
               }),
+              jsxs('select', {
+                'aria-label': t('page.chipWindow'),
+                value: chipChoices.value,
+                onChange: event => saveChipWindow(event.target.value),
+                style: {
+                  fontSize: '0.75rem',
+                  color: text.primary,
+                  background: 'var(--ui-bg-primary)',
+                  border: '1px solid var(--ui-stroke-secondary)',
+                  borderRadius: 4,
+                  padding: '2px 6px'
+                },
+                children: [
+                  jsx('option', { value: '', children: t('chip.least') }),
+                  ...chipChoices.choices.map(label => jsx('option', { value: label, children: label }, label))
+                ]
+              }),
               jsx('span', {
                 style: { fontSize: '0.6875rem', color: text.tertiary },
-                children: Number.isFinite(payload.checkedAt)
-                  ? t('page.gatewayChecked', gateway || 'idle', checkedTime(payload.checkedAt, nowMs))
+                children: Number.isFinite(observedTime(payload))
+                  ? t('page.gatewayChecked', gateway || 'idle', checkedTime(observedTime(payload), nowMs))
                   : t('page.gateway', gateway || 'idle')
               }),
               quickUsageSupported
@@ -2012,8 +2117,20 @@ function QuotaRing({ card, mode, size = 64, showValue = true }) {
 
 // The chip shows whichever window has the least left.
 function lowestQuotaCard(cards) {
-  return cards.filter(card => !card.error && quotaPercent(card, 'remaining') !== null)
+  return (cards || []).filter(card => !card.error && quotaPercent(card, 'remaining') !== null)
     .reduce((low, card) => !low || quotaPercent(card, 'remaining') < quotaPercent(low, 'remaining') ? card : low, null)
+}
+
+// A saved label pins the chip. No match, or a match with no percentage,
+// falls back to the least left.
+function chipQuotaCard(cards, windowLabel) {
+  const wanted = normalizeChipWindow(windowLabel).toLowerCase()
+  if (wanted) {
+    const matched = lowestQuotaCard((cards || []).filter(card =>
+      String(card.label || '').trim().toLowerCase() === wanted))
+    if (matched) return matched
+  }
+  return lowestQuotaCard(cards)
 }
 
 function QuickUsageSlot() {
@@ -2027,12 +2144,13 @@ function QuickUsage() {
   const { gateway, profile, preferences, live } = useFocusedLiveCards(open)
   const nowMs = useValue($now)
   const mode = useValue($displayMode)
+  const chipWindow = useValue($chipWindow)
   const cards = arrangeProviderCards(live.data?.cards || [], preferences)
   const groups = groupLiveCards(cards)
   const coolingDown = useCoolingDown(live.cooldownUntil || 0)
-  const lowest = lowestQuotaCard(cards)
+  const lowest = chipQuotaCard(cards, chipWindow)
   const lowestPercent = lowest ? quotaPercent(lowest, mode) : null
-  const checkedAt = live.data?.checkedAt
+  const checkedAt = observedTime(live.data)
   const stale = checkedAt && nowMs - checkedAt >= POLL_MS
   const label = t(mode === 'used' ? 'popup.used' : 'popup.remaining')
   return jsxs(Popover, { open, onOpenChange: value => $quickOpen.set(value), children: [
@@ -2365,6 +2483,7 @@ export default {
     loadClocks()
     $providerPreferences.set(normalizeProviderPreferences(stored('providers', {})))
     $displayMode.set(normalizeDisplayMode(stored('display_mode', 'remaining')))
+    $chipWindow.set(normalizeChipWindow(stored('chip_window', '')))
     $quickUsage.set(stored('quick_usage', false) === true)
     pruneQuotaCache()
     $now.set(Date.now())
