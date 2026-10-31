@@ -1,12 +1,13 @@
 {
   "version": "0.2.22-local.3",
-  "local_build": "2026-10-26-upstream-security-1",
+  "local_build": "2026-10-31-credential-removal-1",
   "upstream_base": "d460334db633fbaa91f0f8b96679e8463bad2a04",
   "upstream_reference_main": "5b6c9c6",
   "upstream_reference_catalog": "248af31",
   "distribution": "standalone-desktop",
   "files": {
-    "plugin.js": "d80d7039650c799151a51c26b0686045d4ba84a72d53c1771941f9bb91ba8c9f",
-    "probe.py": "4410ac361ef99883b275dcf317bbee94326dc3c40cc70e1bc8cf08efd954c9f3"
+    "plugin.js": "59868f2f451e9c38fba44764a0224dcaf1b049862e15d5284f733b09dd1a0f49",
+    "probe.py": "a32b182e083583cc37e57571b370bd829b653c7d813f301b4763c3948e2cc0b9",
+    "manage.py": "6539fa6b833fe580248117c2b5c49c40db45a5f4b67c97fb121cf7518bac479b"
   }
 }

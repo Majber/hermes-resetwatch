@@ -2,7 +2,8 @@
 
 This fork's default branch is **`resetwatch-local`**. The version to install is
 [`resetwatch-local/plugin.js`](resetwatch-local/plugin.js) together with
-[`resetwatch-local/probe.py`](resetwatch-local/probe.py), version **0.2.22-local.3**.
+[`resetwatch-local/probe.py`](resetwatch-local/probe.py) and
+[`resetwatch-local/manage.py`](resetwatch-local/manage.py), version **0.2.22-local.3**.
 It is a standalone Hermes Desktop plugin, not a Hermes core modification.
 
 ## What is different
@@ -39,14 +40,14 @@ git clone --branch resetwatch-local https://github.com/Majber/hermes-resetwatch.
 cd hermes-resetwatch
 DESKTOP_HOME="${HERMES_HOME:-$HOME/.hermes}"
 mkdir -p "$DESKTOP_HOME/desktop-plugins/resetwatch-local"
-cp resetwatch-local/plugin.js resetwatch-local/probe.py \
+cp resetwatch-local/plugin.js resetwatch-local/probe.py resetwatch-local/manage.py \
   "$DESKTOP_HOME/desktop-plugins/resetwatch-local/"
 ```
 
 Install under the home used to **launch Desktop**, not an unrelated bot profile.
 On Windows, use the Desktop launch home's `desktop-plugins\resetwatch-local\`
 folder (`$env:HERMES_HOME`, or `$env:LOCALAPPDATA\hermes` when unset), and copy the
-same two files there. Back up any existing local files before replacing them.
+same three files there. Back up any existing local files before replacing them.
 
 Open **Resetwatch Local** in the sidebar or the palette command
 **Resetwatch Local: Open** (`Ctrl/Cmd+Alt+Shift+R`). Desktop watches the folder;
@@ -55,7 +56,7 @@ its default, but a previously disabled installation stays disabled; enable it
 in Desktop's plugin settings if needed.
 
 For a remote gateway, put **this probe** at that gateway's
-`desktop-plugins/resetwatch-local/probe.py` too. The UI discovers the gateway's
+`desktop-plugins/resetwatch-local/probe.py` with `manage.py` beside it too. The UI discovers the gateway's
 Python and selected profile. It never falls back to the original Resetwatch
 probe if the local probe is missing: an installation error is preferable to
 silently losing read-only/account-status behavior.
@@ -72,6 +73,34 @@ the original identity. We deliberately keep Local in its own directory to avoid
 mixing it with upstream's catalog/updater packaging. This fork does not publish
 a Local catalog package yet. [The historical upstream README](docs/UPSTREAM.md)
 is reference material, not these installation instructions.
+
+## Explicit credential removal (Codex)
+
+In an account row open **Szczegóły / Details**, then **Usuń z puli Hermesa**.
+The first click only reads local inventory. Confirmation shows the local alias,
+original masked identity, profile, opaque account key and exact stable credential
+IDs/source/state. Choose one entry, or all entries only for a complete,
+unambiguously identified, locally owned group (maximum four entries per action).
+Inherited pools, external CLI-only credentials, unknown identities/sources and
+ambiguous IDs fail closed. Cancellation does not invoke the CLI or write auth.
+
+This removes saved Hermes credentials, **not the OpenAI account or subscription**.
+It cannot be undone; signing in again is required. The official
+`hermes --profile <profile> auth remove openai-codex <stable-id>` handles removal
+and source suppression; device-code removal may also clear the provider's saved
+Hermes OAuth block. External Codex CLI files remain untouched. Local never edits
+`auth.json`, config or `.env` directly. Server-side revalidation checks current
+identity and inventory before every removal; local readback must show the exact
+ID absent and non-target pool rows retained before success is reported. Partial
+failures are disclosed, destructive requests are not retried, and the entire
+roster is refreshed afterwards. Background polling remains read-only.
+
+Focused offline regression (one test, includes mocked UI/CLI and isolated probe
+metadata dispatch; no network, models or real credential removal):
+
+```sh
+python -B tests/local/test_credential_removal.py
+```
 
 ## Data and limitations
 
@@ -111,7 +140,7 @@ metadata only, not authentication validation. No alias/settings migration is run
 Review upstream changes before adopting them. `git fetch upstream` does not
 change Local. Merge/cherry-pick only deliberately, then rerun Local tests and
 check credential safety. To update an installation, review/pull this branch and
-manually copy **both** Local files again. Do not run upstream's catalog installer
+manually copy **all three** Local runtime files again. Do not run upstream's catalog installer
 or updater as a shortcut.
 
 ## Focused tests

@@ -20,7 +20,7 @@ const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
 const VERSION = '0.2.22-local.3'
 // Update both files' build stamps together when deploying a new paired build.
-const LOCAL_BUILD = '2026-10-26-upstream-security-1'
+const LOCAL_BUILD = '2026-10-31-credential-removal-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -1702,7 +1702,88 @@ function AccountAliasEditor({ accountKey, alias }) {
   })
 }
 
-function AccountOverviewRow({ snap, nowMs, accountKey, refreshAccount, refreshDisabled, busyAccount }) {
+async function prepareCredentialRemoval({ accountKey, connectionId, profile, sessionId }) {
+  const match = /^openai-codex:([a-f0-9]{20})$/.exec(accountKey)
+  if (!match || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile || '') || connectionId === null) throw new Error('Nieustalony profil lub konto — usuwanie zablokowane.')
+  const target = await profileRequester(connectionId, profile, sessionId)
+  const shown = await target.request('config.show', {})
+  const homes = hermesHomeCandidates(hermesHomeFromConfig(shown)).filter(shellSafe)
+  const pythons = [...new Set(homes.flatMap(probePythonCandidates)), 'python3', 'python']
+  for (const home of homes) for (const python of pythons) {
+    const command = `${quoteShell(python)} ${quoteShell(`${home}/desktop-plugins/resetwatch-local/probe.py`)} --profile ${quoteShell(target.profile)}`
+    let result
+    try { result = await target.request('shell.exec', { command: `${command} --credential-plan=${match[1]}` }) }
+    catch (error) { if (error && error.shellRefused) throw error; continue }
+    if (!result || result.code) continue // Discovery is read-only; never retry a removal.
+    let plan
+    try { plan = JSON.parse(String(result.stdout || '')) } catch { continue }
+    if (plan.local_build !== LOCAL_BUILD) throw new Error('Niezgodne pliki Local — usuwanie zablokowane. Zaktualizuj plugin.js, probe.py i manage.py.')
+    if (plan.error || plan.account_key !== match[1] || !/^[a-f0-9]{64}$/.test(plan.revision || '') || !Array.isArray(plan.entries) || !plan.entries.length || plan.entries.length > 4
+      || plan.entries.some(row => !/^[a-f0-9]{6,64}$/.test(row.id) || /^\d+$/.test(row.id))) throw new Error('Nie można bezpiecznie zidentyfikować własnych wpisów tego profilu. Nic nie usunięto.')
+    return { ...plan, remove: async ids => {
+      if (!ids.length || ids.some(id => !plan.entries.some(row => row.id === id))) throw new Error('Nieprawidłowy wybór wpisów.')
+      // Exactly one mutation request; even timeouts must not auto-retry.
+      const response = await target.request('shell.exec', { command: `${command} --credential-remove=${match[1]} --credential-ids=${ids.join(',')} --credential-revision=${plan.revision}` })
+      if (!response || response.code) throw new Error('CLI nie potwierdziło operacji. Nie ponawiaj bez sprawdzenia puli.')
+      const outcome = JSON.parse(String(response.stdout || ''))
+      if (outcome.local_build !== LOCAL_BUILD || !Array.isArray(outcome.removed_ids)) throw new Error('Brak poprawnego odczytu po operacji. Sprawdź pulę.')
+      return outcome
+    } }
+  }
+  throw new Error('Nie znaleziono działającego probe.py Local do bezpiecznego odczytu wpisów.')
+}
+
+function CredentialRemoval({ accountKey, alias, snap, removalContext }) {
+  const [plan, setPlan] = useState(null)
+  const [choice, setChoice] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const lock = useRef(false)
+  const selected = plan ? choice === 'all' ? plan.entries : plan.entries.filter(row => row.id === choice) : []
+  const prepare = async () => {
+    if (lock.current || !removalContext || removalContext.blocked) return
+    lock.current = true; setBusy(true); setMessage('')
+    try {
+      const next = await prepareCredentialRemoval({ accountKey, ...removalContext })
+      setPlan(next); setChoice(next.entries[0].id)
+    } catch { setMessage('Nie można bezpiecznie ustalić wpisów konta. Usuwanie zablokowane; wpisy odziedziczone lub niejednoznaczne pozostają tylko do odczytu.') }
+    finally { lock.current = false; setBusy(false) }
+  }
+  const confirm = async () => {
+    if (lock.current || !plan || !selected.length || !removalContext || removalContext.blocked) return
+    lock.current = true; setBusy(true)
+    try {
+      const outcome = await plan.remove(selected.map(row => row.id))
+      const count = outcome.removed_ids.length
+      const note = outcome.ok ? `Usunięto z puli Hermesa: ${count} wpisów (potwierdzono odczytem).` : `${outcome.partial ? 'Częściowe usunięcie' : 'Brak pełnego potwierdzenia'}: ${count}/${selected.length}. Sprawdź odświeżoną pulę przed ponowieniem.`
+      setMessage(note)
+      if (typeof host.notify === 'function') host.notify({ kind: outcome.ok ? 'success' : 'error', message: note })
+    } catch { setMessage('Wynik usuwania niepewny. Nie ponawiaj automatycznie; sprawdź odświeżoną pulę.') }
+    finally {
+      setPlan(null); lock.current = false; setBusy(false)
+      // Refresh the entire roster, even after a partial failure; no cooldown gate.
+      try { await removalContext.onRefresh() } catch { setMessage('Operacja zakończona, ale odświeżenie puli nie powiodło się. Odśwież ręcznie przed kolejną operacją.') }
+    }
+  }
+  return jsxs('div', { 'data-credential-management': true, style: { fontSize: '0.75rem' }, children: [
+    jsx(SmallButton, { disabled: busy || !removalContext || removalContext.blocked || !/^openai-codex:[a-f0-9]{20}$/.test(accountKey), onClick: prepare, children: busy ? 'Czekaj…' : 'Usuń z puli Hermesa' }),
+    plan ? jsxs('div', { role: 'alertdialog', 'aria-modal': false, 'aria-label': 'Potwierdź usunięcie z puli Hermesa', style: { padding: 10, marginTop: 6, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 6, color: text.primary }, children: [
+      jsx('strong', { children: `Usuń z puli Hermesa: ${alias || snapshotAccountLabel(snap)} (${snapshotAccountLabel(snap) || 'konto'}, ${accountKey})` }),
+      jsx('p', { children: `Profil: ${removalContext.profile}. To NIE usuwa konta OpenAI ani subskrypcji. Usunięcie zapisanych poświadczeń jest nieodwracalne — przywrócenie wymaga ponownego logowania. Hermes CLI może również wyczyścić zapis logowania Codex w Hermesie i zablokować ponowny import tego źródła; pliki Codex CLI pozostają nietknięte.` }),
+      plan.entries.length > 1 ? jsx('select', { 'aria-label': 'Wpisy do usunięcia', value: choice, disabled: busy, onChange: event => setChoice(event.target.value), children: [
+        ...plan.entries.map(row => jsx('option', { value: row.id, children: `Wpis ${row.id} · ${row.source} · ${row.state}` }, row.id)),
+        plan.all_allowed ? jsx('option', { value: 'all', children: `Wszystkie wpisy tego konta (${plan.entries.length})` }) : null
+      ] }) : null,
+      jsx('p', { children: 'Dokładnie te wpisy zostaną usunięte:' }),
+      jsx('ul', { children: selected.map(row => jsx('li', { children: `${row.id} · ${row.source} · ${row.state}` }, row.id)) }),
+      jsx('button', { type: 'button', disabled: busy || !removalContext || removalContext.blocked, onClick: confirm, style: { color: text.red, background: 'transparent', border: '1px solid var(--ui-stroke-secondary)', padding: '4px 8px', borderRadius: 4 }, children: 'Potwierdzam — usuń zapisane poświadczenia' }),
+      jsx(SmallButton, { disabled: busy, onClick: () => { setPlan(null); setChoice(''); setMessage('') }, children: 'Anuluj' })
+    ] }) : null,
+    message ? jsx('p', { role: 'status', children: message }) : null
+  ] })
+}
+
+function AccountOverviewRow({ snap, nowMs, accountKey, refreshAccount, refreshDisabled, busyAccount, removalContext }) {
   const t = useLocalText()
   const [expanded, setExpanded] = useState(false)
   const aliases = useValue($accountAliases)
@@ -1738,6 +1819,7 @@ function AccountOverviewRow({ snap, nowMs, accountKey, refreshAccount, refreshDi
     expanded ? jsx('tr', { id: detailId, 'data-account-details': key || 'unknown', children: jsx('td', { colSpan: 4, style: { ...overviewCellStyle, padding: 10 }, children: jsxs('div', {
       style: { display: 'flex', flexDirection: 'column', gap: 6, whiteSpace: 'normal' }, children: [
         jsx(AccountAliasEditor, { accountKey: aliasKey, alias }),
+        jsx(CredentialRemoval, { accountKey, alias, snap, removalContext }, JSON.stringify([removalContext && removalContext.connectionId, removalContext && removalContext.profile, removalContext && removalContext.sessionId, accountKey])),
         jsx(SmallButton, { disabled: refreshDisabled || !/^openai-codex:[a-f0-9]{20}$/.test(accountKey) || !refreshAccount,
           title: refreshDisabled ? t('cooldown') : t('guidance'), onClick: () => refreshAccount(accountKey),
           children: busyAccount === accountKey ? `↻ ${t('refreshing')}` : t('checkAccount') }),
@@ -1761,7 +1843,7 @@ function AccountOverviewRow({ snap, nowMs, accountKey, refreshAccount, refreshDi
   ] })
 }
 
-function AccountOverviewTable({ accounts, nowMs, accountSort, refreshAccount, refreshDisabled, busyAccount }) {
+function AccountOverviewTable({ accounts, nowMs, accountSort, refreshAccount, refreshDisabled, busyAccount, removalContext }) {
   const t = useLocalText()
   return jsxs('div', { 'data-account-overview': true, style: { overflowX: 'auto', width: '100%', minWidth: 0 }, children: [
     jsx('style', { children: '.resetwatch-local-account-table > tbody > tr[data-account-row]:hover > td { background-color: color-mix(in srgb, var(--ui-text-primary) 5%, transparent); }' }),
@@ -1772,12 +1854,12 @@ function AccountOverviewTable({ accounts, nowMs, accountSort, refreshAccount, re
       jsx('thead', { children: jsx('tr', { children: ['account', 'session', 'weekly', 'observation'].map(label => jsx('th', {
         scope: 'col', style: { ...overviewCellStyle, padding: '5px 8px', color: text.secondary, fontWeight: 500, whiteSpace: 'nowrap' }, children: label === 'weekly' && [...accounts.values()].some(account => (account.snap.windows || []).some(window => window.label === '30 days')) ? 'Tydzień / 30 dni' : t(label)
       }, label)) }) }),
-      jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key, refreshAccount, refreshDisabled, busyAccount }, key)) })
+      jsx('tbody', { children: sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsx(AccountOverviewRow, { snap: account.snap, nowMs, accountKey: key, refreshAccount, refreshDisabled, busyAccount, removalContext }, key)) })
     ]
   })] })
 }
 
-function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort, refreshAccount, refreshDisabled, busyAccount }) {
+function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort, refreshAccount, refreshDisabled, busyAccount, removalContext }) {
   const [open, toggle] = useSectionOpen(`provider:${title}`)
   const t = useLocalText()
   const accounts = new Map()
@@ -1796,7 +1878,7 @@ function ProviderBlock({ title, cards, nowMs, empty, actionsFor, accountSort, re
         : !cards.length
           ? jsx('div', { style: { fontSize: '0.8125rem', color: text.tertiary }, children: empty })
           : accounts.size && [...accounts.values()].every(account => providerKey(account.snap.provider) === 'openai-codex')
-            ? jsx(AccountOverviewTable, { accounts, nowMs, accountSort, refreshAccount, refreshDisabled, busyAccount })
+            ? jsx(AccountOverviewTable, { accounts, nowMs, accountSort, refreshAccount, refreshDisabled, busyAccount, removalContext })
             : accounts.size
             ? sortAccounts(accounts, accountSort, nowMs).map(([key, account]) => jsxs('div', { style: { display: 'flex', flexDirection: 'column', gap: 6 }, children: [
                 jsx(AccountStatusCard, { snap: account.snap, nowMs }),
@@ -2116,6 +2198,20 @@ function PluginPageContent() {
     }
   }, [])
 
+  const refreshAfterRemoval = async () => {
+    // A poll already in flight must finish before the post-mutation roster read.
+    for (let attempt = 0; attempt < 35; attempt++) {
+      const result = live.refetch()
+      if (result) {
+        const refreshed = await result
+        if (refreshed === null) throw new Error('Roster refresh failed')
+        return
+      }
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+    throw new Error('Roster refresh remained busy')
+  }
+
   const startRefresh = accountKey => {
     if (refreshLock.current || live.isFetching || cooldownUntil > Date.now() || gateway !== 'open' || connectionId === null) return false
     const result = live.refetch && live.refetch(accountKey)
@@ -2256,7 +2352,8 @@ function PluginPageContent() {
                             children: groups.map(group =>
                               jsx(ProviderBlock, { title: group.title, cards: group.cards, nowMs, accountSort,
                                 refreshAccount: accountKey => { if (startRefresh(accountKey)) tap() },
-                                refreshDisabled: !!live.isFetching || coolingDown || gateway !== 'open' || connectionId === null, busyAccount }, group.title)
+                                refreshDisabled: !!live.isFetching || coolingDown || gateway !== 'open' || connectionId === null, busyAccount,
+                                removalContext: gateway === 'open' && connectionId !== null ? { connectionId, profile, sessionId, blocked: !!live.isFetching, onRefresh: refreshAfterRemoval } : null }, group.title)
                             )
                           })
                         : jsx('div', {

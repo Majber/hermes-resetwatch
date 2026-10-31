@@ -1,9 +1,12 @@
 """Read-only catalog usage probe for Resetwatch.
 
-Reads existing CLI and Hermes access tokens and calls vendor usage APIs. Never
-exchanges refresh tokens or writes login files. Expired Kimi/Grok credentials
+The default path reads existing CLI and Hermes access tokens and calls vendor
+usage APIs; it never exchanges refresh tokens or writes login files. Expired Kimi/Grok credentials
 produce an error asking the user to sign in with the vendor CLI. Cursor CLI
-commands and Hermes OAuth resolvers are not invoked. Result/rate-limit caches
+commands and Hermes OAuth resolvers are not invoked. The default usage path is
+read-only; explicit --credential-remove delegates ONLY user-confirmed removal
+to the official Hermes CLI with identity revalidation and local readback.
+Result/rate-limit caches
 under $HERMES_HOME/cache/resetwatch-local may be written. No tokens on stdout.
 
 Private vendor APIs are best-effort and may change without notice.
@@ -102,7 +105,7 @@ USER_AGENT = "resetwatch"
 CLAUDE_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 CLAUDE_OAUTH_PROFILE_URL = "https://api.anthropic.com/api/oauth/profile"
 
-LOCAL_BUILD = '2026-10-26-upstream-security-1'
+LOCAL_BUILD = '2026-10-31-credential-removal-1'
 
 CODEX_DEFAULT_BASE_URL = "https://chatgpt.com/backend-api/codex"
 CODEX_TOKEN_SKEW_SECONDS = 120
@@ -3954,6 +3957,28 @@ def _main_inner() -> int:
         _profile_inherits_env = inherited_home is not None and inherited_home.resolve() == target
         _profile_home = target
         os.environ["HERMES_HOME"] = str(target)
+    # Explicit management is a separate local-only opt-in path. Polling never
+    # imports this helper or invokes the CLI. IDs/revision are server-revalidated.
+    management = [arg for arg in sys.argv[1:] if arg.startswith(("--credential-plan=", "--credential-remove="))]
+    if management:
+        result = {"ok": False, "error": "Nie można bezpiecznie ustalić wpisów. Niczego nie ponawiaj automatycznie."}
+        try:
+            import manage as credential_manage
+            if len(management) != 1 or _profile_home is None:
+                raise ValueError("Explicit profile required")
+            mode, key = management[0].split("=", 1)
+            if mode == "--credential-plan":
+                result = credential_manage.plan(sys.modules[__name__], key)
+            else:
+                ids = [arg.split("=", 1)[1] for arg in sys.argv[1:] if arg.startswith("--credential-ids=")]
+                revisions = [arg.split("=", 1)[1] for arg in sys.argv[1:] if arg.startswith("--credential-revision=")]
+                if len(ids) != 1 or len(revisions) != 1:
+                    raise ValueError("Missing exact target")
+                result = credential_manage.remove(sys.modules[__name__], key, ids[0].split(","), revisions[0])
+        except Exception:
+            pass  # Do not disclose exception bodies or raw credential data.
+        _emit_json({**result, "local_build": LOCAL_BUILD}, sys.stdout)
+        os._exit(0)
     cli_only = "--cli-only" in sys.argv
     fresh = "--fresh" in sys.argv
     account_keys = [arg[len("--account-key="):] for arg in sys.argv[1:] if arg.startswith("--account-key=")]
