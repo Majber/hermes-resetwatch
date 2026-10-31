@@ -128,3 +128,245 @@ def remove(probe, key, ids, revision):
         error = "Nie potwierdzono pełnego usunięcia; pula lub tożsamość zmieniła się albo CLI odmówiło. Odśwież i sprawdź wpisy."
     return {"ok": error is None, "removed_ids": removed,
             "partial": bool(removed) and error is not None, "error": error}
+
+
+# Verified official backend-client schema, pinned in docs/banked-reset.md.
+# No default probe route calls these functions; explicit manage.py CLI only.
+import time
+import secrets
+import uuid
+
+RESET_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+LOCAL_BUILD = '2026-10-31-banked-reset-1'
+PLAN_SECONDS = 120
+
+
+def _reset_context(probe, key):
+    if probe._profile_home is None or not re.fullmatch(r"[a-f0-9]{20}", key):
+        raise ValueError("Nieustalony profil lub konto.")
+    matches = [a for a in probe._codex_pool_accounts() if a["key"] == key]
+    if len(matches) != 1:
+        raise ValueError("Niejednoznaczne konto.")
+    account = matches[0]
+    candidates = [c for c in account["candidates"] if c["state"] == "ready"]
+    if not candidates or not account.get("account_id"):
+        raise ValueError("Brak aktualnego poświadczenia; zaloguj się samodzielnie.")
+    candidate = candidates[0]  # Never rotate or refresh grants for a mutation.
+    token = candidate["token"]
+    subject = probe._jwt_claims(token).get("sub")
+    url = probe._codex_usage_url(account.get("base_url") or probe.CODEX_DEFAULT_BASE_URL)
+    if (url != RESET_USAGE_URL or account.get("source_host") != "chatgpt.com"
+            or not subject or probe._codex_token_expiring(token)
+            or probe._codex_account_id_from_token(token) != account["account_id"]
+            or any(probe._jwt_claims(c["token"]).get("sub") != subject for c in candidates)):
+        raise ValueError("Nieobsługiwany host lub niejednoznaczna tożsamość.")
+    binding = [str(probe._profile_home.resolve()), key, account["account_id"], subject, url, token]
+    return {"url": url, "token": token, "account_id": account["account_id"],
+            "binding": _revision(binding),
+            "identity": probe._mask_email_label(probe._codex_name_from_token(token)) if "@" in probe._codex_name_from_token(token) else "konto · " + key[:8]}
+
+
+def _reset_request(ctx, method, path, payload=None):
+    import httpx
+    # Fixed official route only. httpx defaults to zero retries; no redirects,
+    # including same-host redirects, so bearer never crosses an origin boundary.
+    if ctx["url"] != RESET_USAGE_URL or path not in {"/usage", "/rate-limit-reset-credits", "/rate-limit-reset-credits/consume"}:
+        raise ValueError("Unsupported reset route")
+    headers = {"Authorization": "Bearer " + ctx["token"], "Accept": "application/json",
+               "User-Agent": "codex-cli", "ChatGPT-Account-Id": ctx["account_id"]}
+    with httpx.Client(timeout=3.0, follow_redirects=False) as client:
+        response = client.request(method, ctx["url"].rsplit("/", 1)[0] + path, headers=headers,
+                                  **({"json": payload} if payload is not None else {}))
+        response.raise_for_status()
+        if response.status_code != 200:
+            raise ValueError("Unexpected reset status")
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("Invalid reset response")
+        return data
+
+
+def _reset_read(probe, ctx):
+    usage = _reset_request(ctx, "GET", "/usage")
+    if usage.get("account_id") != ctx["account_id"]:
+        raise ValueError("Odczyt wskazuje inne konto lub brak tożsamości.")
+    details = _reset_request(ctx, "GET", "/rate-limit-reset-credits")
+    if (not isinstance(details.get("credits"), list)
+            or type(details.get("available_count")) is not int or details["available_count"] < 0):
+        raise ValueError("Niepełny odczyt resetów.")
+    ids = [c.get("id") for c in details["credits"] if isinstance(c, dict)]
+    if len(ids) != len(details["credits"]) or any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
+        raise ValueError("Niejednoznaczna lista resetów.")
+    windows = probe._codex_windows_from_payload(usage)
+    if not windows:
+        raise ValueError("Brak bieżących okien limitów.")
+    summary = usage.get("rate_limit_reset_credits") or {}
+    applicable = summary.get("applicable_available_count")
+    return {"available_count": details["available_count"],
+            "applicable_available_count": applicable if type(applicable) is int and applicable >= 0 else None,
+            "windows": windows, "observed_at": time.time(), "credits": details["credits"],
+            "user_id": usage.get("user_id")}
+
+
+def _reset_usable(probe, data):
+    credits = []
+    for row in data["credits"]:
+        if row.get("status") != "available" or row.get("reset_type") != "codex_rate_limits":
+            continue
+        expiry = row.get("expires_at")
+        parsed = probe._parse_dt(expiry) if expiry else None
+        if expiry and (parsed is None or parsed.timestamp() <= time.time()):
+            continue
+        credits.append({"id": row["id"], "expires_at": expiry,
+                        "title": str(row.get("title") or "Banked reset")[:80]})
+    credits.sort(key=lambda row: (probe._parse_dt(row["expires_at"]).timestamp() if row["expires_at"] else float("inf"), row["id"]))
+    return credits
+
+
+def _reset_plan_path(probe, token):
+    if not isinstance(token, str) or not re.fullmatch(r"[a-f0-9]{64}", token):
+        raise ValueError("Invalid plan token")
+    return probe._resetwatch_cache_dir() / ("reset_plan." + token + ".json")
+
+
+def prepare_reset(probe, key):
+    ctx = _reset_context(probe, key)
+    current = _reset_read(probe, ctx)
+    usable = _reset_usable(probe, current)
+    credits = [c for c in usable if not _reset_attempt_path(probe, key, c["id"]).exists()]
+    result = {"account_key": key, "identity": ctx["identity"], "credits": credits,
+              **{k: current[k] for k in ("available_count", "applicable_available_count", "windows", "observed_at")}}
+    if not credits or current["available_count"] == 0 or current["applicable_available_count"] == 0:
+        result["reason"] = ("Wcześniej wysłany reset nadal jest dostępny w GET; zabezpieczenie blokuje ponowne wysłanie tego samego ID. Sprawdź ręcznie konto OpenAI."
+                            if usable and not credits else "OpenAI zgłasza 0 resetów do użycia teraz lub brak dostępnego resetu Codex. Nie ustalamy przyczyny.")
+        return result
+    token = secrets.token_hex(32)
+    expires = time.time() + PLAN_SECONDS
+    stored = {"account_key": key, "binding": ctx["binding"], "credits": credits,
+              "user_id": current["user_id"], "expires_at": expires,
+              "local_build": probe.LOCAL_BUILD, "redeem_request_id": str(uuid.uuid4())}
+    path = _reset_plan_path(probe, token)
+    # Only plugin-local cache metadata, never auth/config; no raw tokens/identity.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "w") as stream:
+        json.dump(stored, stream)
+    return {**result, "plan_token": token, "expires_at": expires}
+
+
+def _reset_attempt_path(probe, key, credit_id):
+    # Stable across token rotation and new plans; uncertain attempts cannot be
+    # resubmitted even after restart. Contains no bearer or raw identity.
+    digest = hashlib.sha256((key + "\0" + credit_id).encode()).hexdigest()
+    return probe._resetwatch_cache_dir() / ("reset_attempt." + digest)
+
+
+def _invalidate_reset_cache(probe, key):
+    # Old usage must not be replayed as if it were the post-consume observation.
+    cache = probe._resetwatch_cache_dir()
+    for name in (f"codex_result.{key}.json", f"codex_observation.{key}.json", "probe_snapshots.cli.json", "probe_snapshots.full.json"):
+        try:
+            (cache / name).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def redeem_reset(probe, key, token, choice, confirmed=False):
+    outcome = {"ok": False, "uncertain": False, "submitted": False, "code": None,
+               "windows_reset": None, "credit_verified": False, "after": None,
+               "error": "Plan wygasł lub zmieniło się konto/reset. Przygotuj ponownie; niczego nie ponowiono."}
+    try:
+        if confirmed is not True or type(choice) is not int or choice < 0:
+            return outcome
+        path = _reset_plan_path(probe, token)
+        # Atomic one-use claim across processes/double-clicks. Claim remains after
+        # crash/timeout so neither this plan nor its request ID can be resubmitted.
+        claimed = path.with_suffix(".used")
+        os.rename(path, claimed)
+        stored = json.loads(claimed.read_text())
+        ctx = _reset_context(probe, key)
+        if (stored["account_key"] != key or stored["binding"] != ctx["binding"]
+                or stored["local_build"] != probe.LOCAL_BUILD or time.time() >= stored["expires_at"]
+                or choice >= len(stored["credits"])):
+            return outcome
+        selected = stored["credits"][choice]
+        before = _reset_read(probe, ctx)
+        if (before["user_id"] != stored["user_id"] or before["available_count"] <= 0
+                or before["applicable_available_count"] == 0
+                or selected not in _reset_usable(probe, before)):
+            return outcome
+        # Revalidate the exact profile/account/subject/token/host after live GETs.
+        if _reset_context(probe, key)["binding"] != stored["binding"] or time.time() >= stored["expires_at"]:
+            return outcome
+        attempt = _reset_attempt_path(probe, key, selected["id"])
+        fd = os.open(attempt, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump({"credit_id": selected["id"], "at": time.time()}, stream)
+        outcome["submitted"] = True
+        outcome["uncertain"] = True
+        try:
+            response = _reset_request(ctx, "POST", "/rate-limit-reset-credits/consume",
+                                      {"redeem_request_id": stored["redeem_request_id"], "credit_id": selected["id"]})
+            code = response.get("code")
+            count = response.get("windows_reset")
+            if code in {"reset", "nothing_to_reset", "no_credit", "already_redeemed"}:
+                outcome["code"] = code
+            if type(count) is int and count >= 0:
+                outcome["windows_reset"] = count
+        except Exception:
+            pass  # A network/HTTP/parse error can occur after server-side mutation.
+        try:
+            after = _reset_read(probe, ctx)
+            if after["user_id"] != stored["user_id"] or _reset_context(probe, key)["binding"] != stored["binding"]:
+                raise ValueError("Identity changed during readback")
+            outcome["after"] = {k: after[k] for k in ("available_count", "applicable_available_count", "windows", "observed_at")}
+            exact = next((c for c in after["credits"] if c["id"] == selected["id"]), None)
+            # Absence alone is not proof of redemption (could be expiry/filtering).
+            outcome["credit_verified"] = bool(exact and exact.get("status") == "redeemed")
+            outcome["ok"] = outcome["code"] == "reset" and type(outcome["windows_reset"]) is int and outcome["windows_reset"] > 0 and outcome["credit_verified"]
+            outcome["uncertain"] = not outcome["ok"] and outcome["code"] not in {"nothing_to_reset", "no_credit"}
+            outcome["error"] = None if outcome["ok"] else "Brak pełnego potwierdzenia. Sprawdź konto i aktualną listę; nie ponawiaj bez ręcznej weryfikacji."
+        except Exception:
+            outcome["error"] = "Wynik niepewny: odczyt po operacji nie powiódł się. Sprawdź ręcznie w OpenAI. Nie ponawiaj automatycznie."
+        _invalidate_reset_cache(probe, key)
+        if outcome["code"] in {"nothing_to_reset", "no_credit"} and not outcome["credit_verified"]:
+            attempt.unlink(missing_ok=True)  # A new explicit plan is allowed only for a definite non-consume outcome.
+    except Exception:
+        pass  # No exception strings, response bodies, bearer or auth rows in output.
+    return outcome
+
+
+def main():
+    import argparse
+    import probe
+    parser = argparse.ArgumentParser(description="Explicit Resetwatch Local banked reset actions")
+    parser.add_argument("--profile", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--reset-prepare")
+    mode.add_argument("--reset-redeem")
+    parser.add_argument("--reset-plan")
+    parser.add_argument("--reset-choice", type=int)
+    parser.add_argument("--confirm-irreversible", action="store_true", default=False)
+    args = parser.parse_args()
+    result = {"ok": False, "error": "Nie można przygotować resetu: brak świeżej tożsamości/limitów lub obsługi endpointu. Niczego nie ponawiaj automatycznie."}
+    try:
+        import httpx  # Dependency discovery only, no request or login.
+        if probe.LOCAL_BUILD != LOCAL_BUILD:
+            raise ValueError("Mismatched Local runtime files")
+        probe._profile_home = probe._resolve_profile_home(args.profile)
+        if probe._profile_home is None:
+            raise ValueError("Unknown profile")
+        os.environ["HERMES_HOME"] = str(probe._profile_home)
+        if args.reset_prepare:
+            result = prepare_reset(probe, args.reset_prepare)
+        else:
+            result = redeem_reset(probe, args.reset_redeem, args.reset_plan, args.reset_choice, args.confirm_irreversible)
+    except ImportError:
+        return 2  # Read-only discovery may try an installed interpreter with httpx.
+    except Exception:
+        pass
+    print(json.dumps({**result, "local_build": LOCAL_BUILD}, separators=(",", ":"), ensure_ascii=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

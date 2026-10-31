@@ -1,13 +1,13 @@
 {
-  "version": "0.2.22-local.4",
-  "local_build": "2026-10-31-codex-add-assisted-1",
+  "version": "0.2.22-local.5",
+  "local_build": "2026-10-31-banked-reset-1",
   "upstream_base": "d460334db633fbaa91f0f8b96679e8463bad2a04",
   "upstream_reference_main": "5b6c9c6",
   "upstream_reference_catalog": "248af31",
   "distribution": "standalone-desktop",
   "files": {
-    "plugin.js": "84d8234e1c7351a355dd950cb4db70d45e896e93bcdb4e5d09a82c223672bfe2",
-    "probe.py": "54d7a2992119172c17d1ccb97f81e53e3e1616b429651937f9501e70c6a19ddf",
-    "manage.py": "6539fa6b833fe580248117c2b5c49c40db45a5f4b67c97fb121cf7518bac479b"
+    "plugin.js": "e2bd22da26bee1a2bce43b9bf4367d8d2562e126020ccf922807452b4e119428",
+    "probe.py": "eb7f1f653f4cd4a36df2ba2d89f0a3f7410b238f6427bbcc71a0b74fce92f727",
+    "manage.py": "0ddb6e5d969bd94f2875d7c850e395c207c673ee98cf1674524147b2c9915a51"
   }
 }

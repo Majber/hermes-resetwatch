@@ -18,9 +18,9 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'resetwatch-local'
 const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
-const VERSION = '0.2.22-local.4'
+const VERSION = '0.2.22-local.5'
 // Update all stamped runtime files together when deploying a paired build.
-const LOCAL_BUILD = '2026-10-31-codex-add-assisted-1'
+const LOCAL_BUILD = '2026-10-31-banked-reset-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -773,7 +773,7 @@ const LOCAL_TEXT = {
     checkAccount: 'Refresh this account', block_session: 'Limit: Session', 'block_30 days': 'Limit: 30 days', block_weekly: 'Limit: Weekly', block_both: 'Limit: Session + Weekly', block_unknown: 'Limit: scope unknown', recovery: 'Predicted recovery', recoveryUnknown: 'Recovery time unknown',
     account: 'Account / status', session: 'Session', weekly: 'Weekly', observation: 'Last observation',
     details: 'Details', closeDetails: 'Hide details', noObservation: 'No observation', historicalShort: 'hist.',
-    bankedResets: 'Resets', usableResets: 'now', bankedResetsHelp: 'Vendor-reported banked and applicable reset counts at the last observation. ? means unknown; 0 usable does not mean the banked reset is lost. No reason for eligibility is inferred, and no reset is applied here.',
+    bankedResets: 'Resets', usableResets: 'now', bankedResetsHelp: 'Vendor-reported banked and applicable reset counts at the last observation. ? means unknown; 0 usable does not mean the banked reset is lost. Background reads never apply resets; Details has an explicit confirmed action.',
     localAlias: 'Local alias', saveAlias: 'Save alias', clearAlias: 'Clear alias',
     aliasHelp: 'Only on this device. Leave empty to restore the original label.',
     aliasSaved: 'Alias saved locally', aliasCleared: 'Original label restored',
@@ -822,7 +822,7 @@ const LOCAL_TEXT = {
     checkAccount: 'Odśwież to konto', block_session: 'Limit: Sesja', 'block_30 days': 'Limit: 30 dni', block_weekly: 'Limit: Tydzień', block_both: 'Limit: Sesja + Tydzień', block_unknown: 'Limit: nieznany zakres', recovery: 'Przewidywany powrót', recoveryUnknown: 'Czas powrotu nieznany',
     account: 'Konto / stan', session: 'Sesja', weekly: 'Tydzień', observation: 'Dostępność / odczyt',
     details: 'Szczegóły', closeDetails: 'Ukryj szczegóły', noObservation: 'Brak odczytu', historicalShort: 'hist.',
-    bankedResets: 'W zapasie', usableResets: 'do użycia', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Nie ustalamy przyczyny dostępności i nie wykorzystujemy resetów.',
+    bankedResets: 'W zapasie', usableResets: 'do użycia', bankedResetsHelp: 'Liczby resetów w zapasie i możliwych do użycia, zgłoszone przez dostawcę podczas ostatniego odczytu. ? oznacza brak danych; 0 do użycia nie oznacza utraty resetu. Odczyty w tle nigdy nie używają resetów; w Szczegółach jest osobna akcja z potwierdzeniem.',
     localAlias: 'Alias lokalny', saveAlias: 'Zapisz alias', clearAlias: 'Usuń alias',
     aliasHelp: 'Tylko na tym urządzeniu. Puste pole przywraca oryginalną etykietę.',
     aliasSaved: 'Alias zapisany lokalnie', aliasCleared: 'Przywrócono oryginalną etykietę',
@@ -1085,7 +1085,7 @@ async function profileRequester(connectionId, profile, sessionId) {
     return Object.assign(new Error(`Odmowa shell.exec: ${detail}`), { shellRefused: true })
   }
   let shellUsesSession = !!sessionId
-  const invoke = async (send, method, params) => {
+  const invoke = async (send, method, params, once = false) => {
     if (method !== 'shell.exec') return send(method, params)
     try {
       return await send(method, shellUsesSession ? { ...params, session_id: sessionId } : params)
@@ -1093,7 +1093,7 @@ async function profileRequester(connectionId, profile, sessionId) {
       // Retry only a schema rejection: the command was not executed. Never
       // retry command failures, timeouts or auth errors (could duplicate work).
       const message = String(error && error.message || error || '')
-      if (shellUsesSession && /\bsession_id\b/i.test(message) && /extra inputs are not permitted|extra[_ -]forbidden|(?:unexpected|extra)\s+(?:input|field|parameter)s?/i.test(message) && !/timeout|timed out|permission.denied|not.authorized/i.test(message)) {
+      if (!once && shellUsesSession && /\bsession_id\b/i.test(message) && /extra inputs are not permitted|extra[_ -]forbidden|(?:unexpected|extra)\s+(?:input|field|parameter)s?/i.test(message) && !/timeout|timed out|permission.denied|not.authorized/i.test(message)) {
         shellUsesSession = false
         try { return await send(method, params) }
         catch (fallbackError) { throw shellRefusal(fallbackError) }
@@ -1103,7 +1103,8 @@ async function profileRequester(connectionId, profile, sessionId) {
   }
   const active = String(profile || '').trim()
   if (!active || !connectionId || typeof host.profileRoutes !== 'function' || typeof host.requestProfile !== 'function') {
-    return { request: (method, params = {}) => invoke((name, args) => host.request(name, args), method, params), profile: active }
+    return { request: (method, params = {}) => invoke((name, args) => host.request(name, args), method, params),
+      requestOnce: (method, params = {}) => invoke((name, args) => host.request(name, args), method, params, true), profile: active }
   }
   const routes = await host.profileRoutes()
   const sourceRoutes = routes.filter(item => item && item.connectionId === connectionId)
@@ -1111,6 +1112,7 @@ async function profileRequester(connectionId, profile, sessionId) {
   if (!route) throw new Error(`No Desktop route for ${active}`)
   return {
     request: (method, params = {}) => invoke((name, args) => host.requestProfile(route, name, args), method, params),
+    requestOnce: (method, params = {}) => invoke((name, args) => host.requestProfile(route, name, args), method, params, true),
     profile: route.targetProfile || route.profile
   }
 }
@@ -1903,6 +1905,106 @@ function CredentialRemoval({ accountKey, alias, snap, removalContext }) {
   ] })
 }
 
+async function prepareBankedReset({ accountKey, connectionId, profile, sessionId }) {
+  const match = /^openai-codex:([a-f0-9]{20})$/.exec(accountKey)
+  if (!match || connectionId === null || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile || '')) throw new Error('Nieustalony profil lub konto.')
+  const target = await profileRequester(connectionId, profile, sessionId)
+  const shown = await target.request('config.show', {})
+  const homes = hermesHomeCandidates(hermesHomeFromConfig(shown)).filter(shellSafe)
+  const pythons = [...new Set(homes.flatMap(probePythonCandidates)), 'python3', 'python']
+  for (const home of homes) for (const python of pythons) {
+    const command = `${quoteShell(python)} ${quoteShell(`${home}/desktop-plugins/resetwatch-local/manage.py`)} --profile ${quoteShell(target.profile)}`
+    let result
+    try { result = await target.request('shell.exec', { command: `${command} --reset-prepare=${match[1]}` }) }
+    catch (error) { if (error && error.shellRefused) throw error; continue }
+    if (!result || result.code) continue // Discovery only; never a POST.
+    let plan
+    try { plan = JSON.parse(String(result.stdout || '')) } catch { continue }
+    if (plan.local_build !== LOCAL_BUILD) throw new Error('Niezgodne pliki Local — reset zablokowany.')
+    if (plan.error) throw new Error(plan.error)
+    if (plan.account_key !== match[1] || !Array.isArray(plan.credits) || !Array.isArray(plan.windows)) throw new Error('Niepełny świeży odczyt resetów.')
+    if (!plan.plan_token) return plan
+    if (!/^[a-f0-9]{64}$/.test(plan.plan_token) || !Number.isFinite(plan.expires_at) || !plan.credits.length) throw new Error('Brak bezpiecznego planu resetu.')
+    let submitted = false
+    return { ...plan, redeem: async choice => {
+      if (submitted || !Number.isInteger(choice) || !plan.credits[choice] || Date.now() >= plan.expires_at * 1000) throw new Error('Przygotuj nowy plan; ten wygasł lub został już użyty.')
+      submitted = true // Also set before a timeout/parse error; NEVER resubmit.
+      const response = await target.requestOnce('shell.exec', { command: `${command} --reset-redeem=${match[1]} --reset-plan=${plan.plan_token} --reset-choice=${choice} --confirm-irreversible` })
+      if (!response || response.code) throw new Error('Niepewny wynik. Sprawdź ręcznie konto OpenAI; nie ponawiaj.')
+      const outcome = JSON.parse(String(response.stdout || ''))
+      if (outcome.local_build !== LOCAL_BUILD || typeof outcome.ok !== 'boolean') throw new Error('Niepełne potwierdzenie. Sprawdź ręcznie konto OpenAI.')
+      return outcome
+    } }
+  }
+  throw new Error('Nie znaleziono działającego manage.py Local z httpx.')
+}
+
+function resetLiveWindows(data) {
+  return ['Session', 'Weekly'].map(label => {
+    const window = (data.windows || []).find(row => row.label === label)
+    return `${label}: ${window ? `${window.used_percent}% użyte · reset ${window.reset_at ? new Date(window.reset_at).toLocaleString() : '?'}` : 'brak okna w odpowiedzi OpenAI'}`
+  }).join(' | ')
+}
+
+function BankedResetAction({ accountKey, alias, removalContext }) {
+  const [plan, setPlan] = useState(null)
+  const [choice, setChoice] = useState(0)
+  const [accepted, setAccepted] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const [after, setAfter] = useState(null)
+  const lock = useRef(false)
+  const alive = useRef(true)
+  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+  const blocked = !removalContext || removalContext.blocked || !/^openai-codex:[a-f0-9]{20}$/.test(accountKey)
+  const prepare = async () => {
+    if (lock.current || blocked) return
+    lock.current = true; setBusy(true); setPlan(null); setAccepted(false)
+    try {
+      const next = await prepareBankedReset({ accountKey, ...removalContext })
+      if (!alive.current) return
+      setPlan(next); setChoice(0); setMessage(next.reason || '')
+    } catch (error) { if (alive.current) setMessage(String(error.message || 'Reset zablokowany.')) }
+    finally { lock.current = false; if (alive.current) setBusy(false) }
+  }
+  const execute = async () => {
+    if (lock.current || blocked || !plan || !accepted || !plan.redeem) return
+    lock.current = true; setBusy(true)
+    const prepared = plan; setPlan(null); setAccepted(false); setAfter(null) // Remove execute even if response is ambiguous.
+    try {
+      const result = await prepared.redeem(choice)
+      if (!alive.current) return
+      setAfter(result.after)
+      setMessage(result.ok ? `Reset potwierdzony: ${result.windows_reset} okna; konkretny reset ma status redeemed w GET.`
+        : `${result.uncertain ? 'Wynik niepewny' : 'Reset niepotwierdzony'} · kod: ${result.code || '?'} · okna: ${result.windows_reset ?? '?'}. ${result.error || 'Sprawdź ręcznie konto OpenAI.'}`)
+    } catch { if (alive.current) setMessage('Wynik niepewny. Nie wysyłamy ponownie. Sprawdź ręcznie konto OpenAI; potem przygotuj nowy odczyt. Ten reset jest zabezpieczony przed ponowieniem.') }
+    finally {
+      lock.current = false; if (alive.current) setBusy(false)
+      // GET-only roster refresh, never another prepare/consume; exact readback above is authoritative.
+      try { await removalContext.onRefresh() } catch { /* Keep the mutation/readback result visible. */ }
+    }
+  }
+  const selected = plan && plan.credits[choice]
+  return jsxs('div', { 'data-banked-reset-action': true, style: { fontSize: '13px' }, children: [
+    jsx(SmallButton, { disabled: busy || blocked, onClick: prepare, children: busy ? 'Czekaj…' : message ? 'Przygotuj ponownie (tylko odczyt)' : 'Użyj banked reset' }),
+    plan ? jsxs('div', { role: 'alertdialog', 'aria-label': 'Potwierdź użycie banked reset', style: { padding: 8, border: '1px solid var(--ui-stroke-secondary)', borderRadius: 6 }, children: [
+      jsx('strong', { children: `${alias || 'Konto Codex'} · ${plan.identity} · profil ${removalContext.profile} · ${accountKey}` }),
+      jsx('p', { children: `Świeży GET: ${new Date(plan.observed_at * 1000).toLocaleString()} · w zapasie ${plan.available_count} · do użycia ${plan.applicable_available_count ?? '?'} (nieznane nie oznacza zgody). Plan ważny 2 minuty.` }),
+      jsx('p', { children: resetLiveWindows(plan) }),
+      plan.credits.length ? jsx('select', { 'aria-label': 'Reset do użycia', value: choice, disabled: busy, onChange: event => { setChoice(Number(event.target.value)); setAccepted(false) }, children: plan.credits.map((credit, index) => jsx('option', { value: index, children: `${credit.title} · ${credit.id} · wygasa ${credit.expires_at ? new Date(credit.expires_at).toLocaleString() : 'brak daty od OpenAI'}` }, credit.id)) }) : null,
+      selected ? jsx('p', { children: `Wybrany reset: ${selected.id} · wygasa ${selected.expires_at ? new Date(selected.expires_at).toLocaleString() : 'brak daty od OpenAI'}. Domyślnie najwcześniej wygasający dostępny reset.` }) : null,
+      plan.plan_token ? jsxs('label', { style: { display: 'block', margin: '6px 0' }, children: [
+        jsx('input', { type: 'checkbox', checked: accepted, disabled: busy, onChange: event => setAccepted(event.target.checked) }),
+        ' Rozumiem: zużycie resetu jest nieodwracalne. Reset zmienia harmonogram limitu Weekly — nowy okres 7 dni może zacząć się teraz; nie zachowuje starego terminu. Ostateczne okna ustala OpenAI.'
+      ] }) : null,
+      plan.plan_token ? jsx(SmallButton, { disabled: busy || blocked || !accepted, onClick: execute, children: 'Potwierdzam — nieodwracalnie użyj wybranego resetu' }) : null,
+      jsx(SmallButton, { disabled: busy, onClick: () => { setPlan(null); setAccepted(false) }, children: 'Anuluj' })
+    ] }) : null,
+    message ? jsx('p', { role: 'status', children: message }) : null,
+    after ? jsx('p', { 'data-reset-readback': true, children: `Odczyt po operacji: ${new Date(after.observed_at * 1000).toLocaleString()} · w zapasie ${after.available_count} · do użycia ${after.applicable_available_count ?? '?'}. ${resetLiveWindows(after)}` }) : null
+  ] })
+}
+
 function AccountOverviewRow({ snap, nowMs, accountKey, refreshAccount, refreshDisabled, busyAccount, removalContext }) {
   const t = useLocalText()
   const [expanded, setExpanded] = useState(false)
@@ -1939,6 +2041,7 @@ function AccountOverviewRow({ snap, nowMs, accountKey, refreshAccount, refreshDi
     expanded ? jsx('tr', { id: detailId, 'data-account-details': key || 'unknown', children: jsx('td', { colSpan: 4, style: { ...overviewCellStyle, padding: 10 }, children: jsxs('div', {
       style: { display: 'flex', flexDirection: 'column', gap: 6, whiteSpace: 'normal' }, children: [
         jsx(AccountAliasEditor, { accountKey: aliasKey, alias }),
+        jsx(BankedResetAction, { accountKey, alias, snap, removalContext }, JSON.stringify(['reset', removalContext && removalContext.connectionId, removalContext && removalContext.profile, removalContext && removalContext.sessionId, accountKey])),
         jsx(CredentialRemoval, { accountKey, alias, snap, removalContext }, JSON.stringify([removalContext && removalContext.connectionId, removalContext && removalContext.profile, removalContext && removalContext.sessionId, accountKey])),
         jsx(SmallButton, { disabled: refreshDisabled || !/^openai-codex:[a-f0-9]{20}$/.test(accountKey) || !refreshAccount,
           title: refreshDisabled ? t('cooldown') : t('guidance'), onClick: () => refreshAccount(accountKey),

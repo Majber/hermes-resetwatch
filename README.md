@@ -3,7 +3,7 @@
 This fork's default branch is **`resetwatch-local`**. The version to install is
 [`resetwatch-local/plugin.js`](resetwatch-local/plugin.js) together with
 [`resetwatch-local/probe.py`](resetwatch-local/probe.py) and
-[`resetwatch-local/manage.py`](resetwatch-local/manage.py), version **0.2.22-local.4**.
+[`resetwatch-local/manage.py`](resetwatch-local/manage.py), version **0.2.22-local.5**.
 It is a standalone Hermes Desktop plugin, not a Hermes core modification.
 
 ## What is different
@@ -163,6 +163,46 @@ metadata dispatch; no network, models or real credential removal):
 ```sh
 python -B tests/local/test_credential_removal.py
 ```
+
+## Explicit banked reset (Codex)
+
+In **Szczegóły / Details**, click **Użyj banked reset**. This first performs only
+fresh GETs for the exact profile/account and credit inventory. Choose a real
+available Codex credit (earliest known expiry first), review alias + masked
+identity, expiry, current Session/Weekly usage and reset times, then acknowledge
+the irreversible operation and changed **7-day Weekly schedule**. Only the final
+**Potwierdzam — nieodwracalnie użyj wybranego resetu** sends one POST.
+**Anuluj** sends none. OpenAI's live `applicable_available_count: 0` disables
+execution without inventing an eligibility reason; missing counts remain `?`.
+
+Implementation and pinned official Codex schema evidence:
+[docs/banked-reset.md](docs/banked-reset.md). This is a private OpenAI backend
+route used by official Codex, not a stable public API. Only the exact HTTPS
+ChatGPT route is enabled; custom hosts and redirects are rejected. Prepare and
+redeem are separate opt-in `manage.py` actions, never default probe/poll actions.
+No auth refresh, inference, automatic consume/retry, core/config/auth/original
+plugin edits or token logging. Existing add-assisted/removal/alias/preferences
+and sorting behavior remains in place.
+
+After POST, live GETs verify account, windows and the exact credit. HTTP 200 alone
+is not success: `code: reset`, positive `windows_reset` and exact credit status
+`redeemed` are required. If the service omits redeemed rows or returns another
+status, the result stays **unconfirmed**, even if its count fell. The shown
+remaining count is the fresh GET count, never local subtraction. Timeout, unknown
+response or failed readback removes Execute, reports uncertainty, and never
+resubmits. A persistent plugin-cache per-credit attempt guard prevents sending
+the same uncertain ID even from a new plan/restart. Preparing again is GET-only;
+inspect OpenAI manually before choosing any other credit.
+
+One focused offline regression (Python + mocked component/transport subfixture),
+no real credentials, consume, grant refresh or inference:
+
+```sh
+python -B tests/local/test_banked_reset.py
+```
+
+Live Electron rendering and real redemption are intentionally left for user
+testing; the offline fixture is not a live endpoint success claim.
 
 ## Data and limitations
 
