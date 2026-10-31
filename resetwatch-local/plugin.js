@@ -168,10 +168,14 @@ function sortAccounts(accounts, selected, nowMs) {
     const status = deriveAccountStatus(entry[1].snap, nowMs)
     return { entry, index, value: value(entry[1].snap),
       // Weekly exhaustion blocks use even when the session allowance is full.
-      blocked: key === 'session' && status.availability === 'limit_reached' ? 1 : 0 }
+      blocked: key === 'session' && status.availability === 'limit_reached' ? 1 : 0,
+      recovery: Number.isFinite(status.recoveryAt) ? status.recoveryAt : null }
   })
     .sort((a, b) => a.value === null && b.value !== null ? 1 : b.value === null && a.value !== null ? -1
       : a.blocked !== b.blocked ? a.blocked - b.blocked
+      : a.blocked && b.blocked ? (a.recovery === null && b.recovery !== null ? 1
+        : b.recovery === null && a.recovery !== null ? -1
+        : a.recovery === b.recovery ? a.index - b.index : a.recovery - b.recovery)
       : a.value === b.value ? a.index - b.index : (a.value - b.value) * (direction === 'desc' ? -1 : 1))
     .map(item => item.entry)
 }
