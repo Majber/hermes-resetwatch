@@ -18,9 +18,9 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 const PLUGIN_ID = 'resetwatch-local'
 const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
-const VERSION = '0.2.22-local.3'
-// Update both files' build stamps together when deploying a new paired build.
-const LOCAL_BUILD = '2026-10-31-credential-removal-1'
+const VERSION = '0.2.22-local.4'
+// Update all stamped runtime files together when deploying a paired build.
+const LOCAL_BUILD = '2026-10-31-codex-add-assisted-1'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -1702,6 +1702,116 @@ function AccountAliasEditor({ accountKey, alias }) {
   })
 }
 
+// Assisted mode deliberately never starts auth through shell.exec or Providers.
+// The official CLI owns OAuth, browser interaction and credential persistence.
+function assistedCodexCommand({ profile, label = '', shell = 'sh' }) {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile || '') || !['sh', 'powershell'].includes(shell)) throw new Error('Nieustalony profil lub terminal.')
+  const name = String(label).trim()
+  if (name.length > ALIAS_MAX_LENGTH || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(String(label))) throw new Error('Nazwa zawiera niedozwolone znaki lub jest za długa.')
+  // POSIX sh and PowerShell single quotes suppress substitutions. Not cmd.exe.
+  const quote = value => shell === 'powershell' ? `'${value.replace(/'/g, "''")}'` : `'${value.replace(/'/g, "'\\''")}'`
+  return `hermes --profile ${quote(profile)} auth add openai-codex --type oauth${name ? ` --label=${quote(name)}` : ''}`
+}
+
+function assistedCodexScopeMatches(connectionId, profile, sessionId) {
+  const state = host.state
+  if (connectionId === null || (state.focusedSessionId?.get() || '') !== (sessionId || '')) return false
+  if (state.focusedSessionOwner) {
+    const owner = state.focusedSessionOwner.get()
+    return !!owner && owner.connectionId === connectionId && owner.profile === profile
+  }
+  const focused = state.focusedSessionProfile?.get()
+  const active = state.profile?.get()
+  return !(focused && focused !== active) && (state.connectionId?.get() || '') === connectionId && (focused || active) === profile
+}
+
+function AssistedCodexAdd({ connectionId, profile, sessionId, blocked, onRefresh }) {
+  const [label, setLabel] = useState('')
+  const [shell, setShell] = useState('sh')
+  const [prepared, setPrepared] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const sequence = useRef(0)
+  const lock = useRef(false)
+  useEffect(() => () => { sequence.current++ }, [])
+  const inScope = () => assistedCodexScopeMatches(connectionId, profile, sessionId)
+  const clear = () => { sequence.current++; lock.current = false; setBusy(false); setPrepared(null); setMessage('') }
+  let valid = false
+  try { assistedCodexCommand({ profile, label, shell }); valid = connectionId !== null } catch { /* fail closed */ }
+  const prepare = async event => {
+    event.preventDefault()
+    if (lock.current || blocked || !valid || !inScope()) return
+    const ticket = ++sequence.current
+    lock.current = true; setBusy(true); setPrepared(null); setMessage('')
+    try {
+      // Resolve mapped profile names through the existing supported route seam.
+      // This only discovers routing; no config, shell or credential RPC is sent.
+      const target = await profileRequester(connectionId, profile, sessionId)
+      const command = assistedCodexCommand({ profile: target.profile, label, shell })
+      if (ticket === sequence.current && inScope()) setPrepared({ command, profile: target.profile })
+    } catch {
+      if (ticket === sequence.current) setMessage('Nie można ustalić profilu. Niczego nie uruchomiono; sprawdź połączenie i profil.')
+    } finally {
+      if (ticket === sequence.current) { lock.current = false; setBusy(false) }
+    }
+  }
+  const copy = async () => {
+    if (lock.current || !prepared || blocked || !inScope()) return
+    const ticket = ++sequence.current
+    lock.current = true; setBusy(true)
+    try {
+      const ok = os && typeof os.writeClipboard === 'function' && await os.writeClipboard(prepared.command)
+      if (ticket === sequence.current && inScope()) setMessage(ok ? 'Skopiowano polecenie. Nie uruchomiono logowania — wklej je do właściwego terminala.' : 'Schowek niedostępny. Zaznacz i skopiuj polecenie ręcznie.')
+    } catch {
+      if (ticket === sequence.current && inScope()) setMessage('Schowek niedostępny. Zaznacz i skopiuj polecenie ręcznie.')
+    } finally {
+      if (ticket === sequence.current) { lock.current = false; setBusy(false) }
+    }
+  }
+  const refresh = async () => {
+    if (lock.current || blocked || !inScope() || typeof onRefresh !== 'function') return
+    const ticket = ++sequence.current
+    lock.current = true; setBusy(true); setMessage('')
+    try {
+      await onRefresh()
+      if (ticket === sequence.current && inScope()) setMessage('Zakończono odświeżenie listy. Nie potwierdza dodania konta — sprawdź wynik CLI i właściwy wiersz; dane mogą być z pamięci podręcznej.')
+    } catch {
+      if (ticket === sequence.current && inScope()) setMessage('Odświeżenie listy nie powiodło się. Nie oznacza to powodzenia ani niepowodzenia logowania; sprawdź wynik CLI.')
+    } finally {
+      if (ticket === sequence.current) { lock.current = false; setBusy(false) }
+    }
+  }
+  return jsxs('details', { 'data-codex-add-assisted': true,
+    onToggle: event => { if (!event.currentTarget.open) clear() },
+    style: { border: '1px solid var(--ui-stroke-secondary)', borderRadius: 6, padding: '6px 10px', fontSize: '0.75rem', color: text.secondary }, children: [
+      jsx('summary', { style: { cursor: 'pointer', color: text.primary }, children: 'Dodaj konto Codex' }),
+      jsx('p', { children: 'Tryb wspomagany: Resetwatch nie uruchamia ani nie potwierdza logowania. Przygotuj polecenie, uruchom je samodzielnie w terminalu, a logowanie zatwierdź w przeglądarce otwartej przez Hermes CLI. Nie wklejaj tutaj tokenów ani kodów logowania.' }),
+      jsx('p', { children: `Połączenie: ${connectionId || 'bieżące'} · profil w Desktop: ${profile || 'nieustalony'}. Użyj terminala na tym samym komputerze / gatewayu i tego samego HERMES_HOME co Hermes. Dla zdalnego gatewaya użyj jego terminala, nie lokalnego.` }),
+      jsxs('form', { onSubmit: prepare, style: { display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }, children: [
+        jsx('input', { type: 'text', 'aria-label': 'Nazwa konta Codex (opcjonalna)', placeholder: 'Nazwa konta (opcjonalna)', value: label, maxLength: ALIAS_MAX_LENGTH,
+          onChange: event => { clear(); setLabel(event.target.value) },
+          style: { minWidth: 140, flex: '1 1 180px', color: text.primary, background: 'transparent', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '4px 6px' } }),
+        jsx('select', { 'aria-label': 'Terminal dla polecenia Codex', value: shell, style: nativeSelectStyle,
+          onChange: event => { clear(); setShell(event.target.value) }, children: [
+            jsx('option', { value: 'sh', style: nativeOptionStyle, children: 'POSIX sh / bash / zsh' }),
+            jsx('option', { value: 'powershell', style: nativeOptionStyle, children: 'PowerShell (nie cmd.exe)' })
+          ] }),
+        jsx('button', { type: 'submit', disabled: busy || blocked || !valid, style: { color: text.primary, background: 'transparent', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: '4px 8px', cursor: 'pointer' }, children: 'Przygotuj polecenie' })
+      ] }),
+      jsx('p', { children: 'Nazwa trafia do oficjalnego --label; pusta oznacza automatyczną nazwę CLI. Lokalny alias nadal ustawisz w Szczegółach dokładnie wybranego konta. Resetwatch nie przypisuje aliasu automatycznie do nowego lub podobnie nazwanego wiersza.' }),
+      prepared ? jsxs('div', { children: [
+        jsx('p', { children: `Docelowy profil CLI: ${prepared.profile}. Polecenie dla ${shell === 'powershell' ? 'PowerShell' : 'POSIX sh / bash / zsh'}:` }),
+        jsx('textarea', { 'aria-label': 'Polecenie logowania Codex', value: prepared.command, readOnly: true, rows: 3, spellCheck: false,
+          style: { width: '100%', boxSizing: 'border-box', resize: 'vertical', fontFamily: 'monospace', color: text.primary, background: 'transparent', border: '1px solid var(--ui-stroke-secondary)', borderRadius: 4, padding: 6 } }),
+        jsx(SmallButton, { disabled: busy || blocked, onClick: copy, children: 'Kopiuj polecenie' })
+      ] }) : null,
+      jsx('p', { children: 'Wybierz inne konto OpenAI, jeśli chcesz osobny limit. Ponowne logowanie do tego samego konta nie dodaje limitu i może unieważnić starszy grant. Niczego nie usuwamy automatycznie. Hermes CLI może ponownie dopuścić wcześniej zablokowane źródła Codex; pierwszy wpis może ustawić aktywnego dostawcę, jeśli nie był wybrany.' }),
+      jsx('p', { children: 'Przerwanie / timeout: Ctrl+C w terminalu lub poczekaj na wygaśnięcie oficjalnego logowania. Zamknięcie tej instrukcji nie zatrzymuje CLI. Po sukcesie CLI odśwież listę poniżej; nazwa nie dowodzi tożsamości konta. Jeśli Codex jest wyłączony w filtrach, włącz go samodzielnie, aby zobaczyć konto.' }),
+      jsx(SmallButton, { disabled: busy || blocked || !valid, onClick: refresh, children: 'Odśwież listę po logowaniu' }),
+      message ? jsx('p', { role: 'status', children: message }) : null
+    ] })
+}
+
 async function prepareCredentialRemoval({ accountKey, connectionId, profile, sessionId }) {
   const match = /^openai-codex:([a-f0-9]{20})$/.exec(accountKey)
   if (!match || !/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(profile || '') || connectionId === null) throw new Error('Nieustalony profil lub konto — usuwanie zablokowane.')
@@ -2327,7 +2437,9 @@ function PluginPageContent() {
           gap: 10
         },
         children: [
-
+          jsx(AssistedCodexAdd, { connectionId, profile, sessionId,
+            blocked: gateway !== 'open' || connectionId === null || !!live.isFetching,
+            onRefresh: refreshAfterRemoval }, JSON.stringify([connectionId, profile, sessionId])),
           jsxs('section', {
             style: { display: 'flex', flexDirection: 'column', gap: 12 },
             children: [

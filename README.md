@@ -3,7 +3,7 @@
 This fork's default branch is **`resetwatch-local`**. The version to install is
 [`resetwatch-local/plugin.js`](resetwatch-local/plugin.js) together with
 [`resetwatch-local/probe.py`](resetwatch-local/probe.py) and
-[`resetwatch-local/manage.py`](resetwatch-local/manage.py), version **0.2.22-local.3**.
+[`resetwatch-local/manage.py`](resetwatch-local/manage.py), version **0.2.22-local.4**.
 It is a standalone Hermes Desktop plugin, not a Hermes core modification.
 
 ## What is different
@@ -73,6 +73,68 @@ the original identity. We deliberately keep Local in its own directory to avoid
 mixing it with upstream's catalog/updater packaging. This fork does not publish
 a Local catalog package yet. [The historical upstream README](docs/UPSTREAM.md)
 is reference material, not these installation instructions.
+
+## Add a Codex account (assisted, not automatic login)
+
+At the top of the page expand **Dodaj konto Codex**. Enter an optional display
+name, select POSIX sh/bash/zsh or PowerShell (**not cmd.exe**), then click
+**Przygotuj polecenie** (or press Enter). After resolving the selected gateway's
+actual profile name, Local shows a selectable command and **Kopiuj polecenie**:
+
+```sh
+hermes --profile 'default' auth add openai-codex --type oauth --label='Work'
+```
+
+The name goes to the official CLI's `--label`; an empty field omits that option.
+Single-quote escaping is shell-specific, including names containing quotes or
+shell metacharacters. Controls/newlines and unknown profiles/shells fail closed.
+Run it yourself in a terminal on the **same gateway machine and HERMES_HOME**,
+and complete the official Hermes browser/device-code login there. Never paste
+OAuth codes, passwords or tokens into Resetwatch or chat. Copying a command does
+**not** start a login, and closing the instructions does **not** cancel a CLI you
+started separately: use Ctrl+C in that terminal or wait for its OAuth expiry.
+
+After the CLI reports success, click **Odśwież listę po logowaniu**. This reuses
+the existing whole-roster read and provider cache/backoff rules; it does not
+claim that an account was added, refresh OAuth tokens, or enable disabled
+providers. Check the actual account row. A separate local alias remains available
+in that row's **Szczegóły / Details** and is saved under its existing `accountKey`.
+Local deliberately does not infer a newly added identity or auto-assign an alias
+from the display name, a similar label, or a list-position difference. Existing
+aliases, removal controls and compact rows are unchanged. The command/form is
+not persisted. Focus/profile switches, closing the form, duplicate clicks and
+late asynchronous results are guarded; clipboard failure offers manual selection.
+
+Use a different OpenAI account for independent quota. Signing in again to the
+same account adds no quota and may revoke its older grant; the official CLI warns
+about this. Local never removes duplicates automatically. Official `auth add`
+can re-enable previously suppressed credential sources and can select the first
+provider when none was selected; these are CLI effects, not Local config edits.
+
+**Why assisted:** verified against the installed Hermes CLI/parser and source:
+`hermes_cli/auth_commands.py` (`_codex_login`, `_add_credential`) calls the official
+OAuth flow and creates an independent `manual:device_code` / `manual:loopback_pkce`
+pool entry with its own label/token pair. `hermes auth add --help` confirms the
+flags. The current `apps/desktop/src/contrib/plugin.ts` `PluginOs` has clipboard
+and URL actions but no interactive process/terminal launcher. `shell.exec` is a
+bounded command/result RPC, not an interactive login lifecycle API. The current
+Providers device-code worker (`hermes_cli/web_routers/oauth.py`) still calls
+`_save_codex_tokens` (singleton); the pool POST (`web_routers/ops.py`) only accepts
+API keys. Neither is a safe OAuth pool-add replacement. No private bridges,
+homemade OAuth server, captured terminal/login output, or core changes are used.
+The official Desktop SDK reference is
+<https://hermes-agent.nousresearch.com/docs/developer-guide/desktop-plugin-sdk>.
+This is an honest manual-assistance fallback, **not one-click browser login**.
+
+One focused offline regression for the add UI and shell argument handling:
+
+```sh
+node tests/local/codex-add-assisted.cjs
+```
+
+It uses synthetic SDK state and a dummy shell function, never the real Hermes
+login, network, credential stores or inference. PowerShell escaping is asserted
+but was not exercised in a PowerShell runtime; live Electron/login is not covered.
 
 ## Explicit credential removal (Codex)
 

@@ -1,13 +1,13 @@
 {
-  "version": "0.2.22-local.3",
-  "local_build": "2026-10-31-credential-removal-1",
+  "version": "0.2.22-local.4",
+  "local_build": "2026-10-31-codex-add-assisted-1",
   "upstream_base": "d460334db633fbaa91f0f8b96679e8463bad2a04",
   "upstream_reference_main": "5b6c9c6",
   "upstream_reference_catalog": "248af31",
   "distribution": "standalone-desktop",
   "files": {
-    "plugin.js": "59868f2f451e9c38fba44764a0224dcaf1b049862e15d5284f733b09dd1a0f49",
-    "probe.py": "a32b182e083583cc37e57571b370bd829b653c7d813f301b4763c3948e2cc0b9",
+    "plugin.js": "84d8234e1c7351a355dd950cb4db70d45e896e93bcdb4e5d09a82c223672bfe2",
+    "probe.py": "54d7a2992119172c17d1ccb97f81e53e3e1616b429651937f9501e70c6a19ddf",
     "manage.py": "6539fa6b833fe580248117c2b5c49c40db45a5f4b67c97fb121cf7518bac479b"
   }
 }
