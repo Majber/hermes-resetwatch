@@ -2437,9 +2437,6 @@ function PluginPageContent() {
           gap: 10
         },
         children: [
-          jsx(AssistedCodexAdd, { connectionId, profile, sessionId,
-            blocked: gateway !== 'open' || connectionId === null || !!live.isFetching,
-            onRefresh: refreshAfterRemoval }, JSON.stringify([connectionId, profile, sessionId])),
           jsxs('section', {
             style: { display: 'flex', flexDirection: 'column', gap: 12 },
             children: [
@@ -2567,7 +2564,10 @@ function PluginPageContent() {
                         )
                   })
             ]
-          })
+          }),
+          jsx(AssistedCodexAdd, { connectionId, profile, sessionId,
+            blocked: gateway !== 'open' || connectionId === null || !!live.isFetching,
+            onRefresh: refreshAfterRemoval }, JSON.stringify([connectionId, profile, sessionId])),
         ]
       })
     ]
