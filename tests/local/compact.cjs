@@ -41,7 +41,14 @@ function resolve(element) {
   if (element == null || typeof element === 'boolean') return null;
   if (Array.isArray(element)) return element.flatMap(item=>[resolve(item)]).filter(Boolean);
   if (typeof element !== 'object') return String(element);
-  if (typeof element.type==='function') return resolve(element.type(element.props));
+  if (typeof element.type==='function') {
+    // The row-expansion stub belongs only to AccountOverviewRow. Child
+    // components must retain their own initial hook state (e.g. removal plan=null).
+    const parentState = context.useState;
+    context.useState = value => [typeof value==='function'?value():value,()=>{}];
+    try { return resolve(element.type(element.props)); }
+    finally { context.useState = parentState; }
+  }
   return {...element,props:{...element.props,children:resolve(element.props?.children)}};
 }
 function nodes(element, predicate) {
