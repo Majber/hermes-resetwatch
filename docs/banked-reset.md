@@ -1,6 +1,6 @@
 # Banked reset: official schema evidence and safety boundary
 
-Verified by retrieving official `openai/codex` source at commit
+Rechecked against the current official `openai/codex` main source at commit
 `67f0994b532b8740f14b5b738af7b7b2a915b1d6` (no account API call).
 
 - [Client paths + serialized request](https://github.com/openai/codex/blob/67f0994b532b8740f14b5b738af7b7b2a915b1d6/codex-rs/backend-client/src/client/rate_limit_resets.rs)
@@ -35,10 +35,21 @@ selectable here. A missing expiry is displayed as no supplied date, sorted last.
 
 This proves official client implementation support, **not** a stable public
 API contract, rollout eligibility or successful live redemption for this user.
-Upstream declares credit `status` as an unrestricted string, not a complete
-terminal-state enum. Local conservatively requires the exact ID in readback
-with literal `redeemed` before claiming verified success. Any other status or
-omitted redeemed row is partial/unconfirmed, never inferred from a count drop.
+GET details has no documented guarantee of retaining consumed rows. The official
+client describes the operation as reading available credits. Requiring a returned
+`redeemed` row in addition to a successful consume response was a Local bug.
+A live available-only list is a plausible cause of the reported symptom, not a
+verified trace of the user's past POSTs (Local does not persist those responses).
+
+A valid top-level `code: reset` and positive integer `windows_reset` confirms the
+submitted operation; the optional nested `credit` is not the success envelope.
+If a top-level `credit_id` or nested `credit.id` is supplied, Local requires exact
+agreement with the selected ID. Missing credit IDs are allowed by the official
+typed response. GET is separately validated to display observed balances/windows.
+Failed readback does not undo POST confirmation: it reports confirmed consumption
+with unavailable limits refresh. A missing selected row, lower balance, or changed
+limits never confirms a lost/invalid POST response. An exact `redeemed` row can
+confirm prior credit redemption, but never alone the success of this operation.
 
 ## Explicit flow
 
@@ -57,9 +68,11 @@ omitted redeemed row is partial/unconfirmed, never inferred from a count drop.
    credit availability/expiry, token and group. Never switch candidates or refresh.
 5. Exactly one POST, no redirects or network/RPC mutation retry. Read back fresh
    GET usage and details on the same context. Success requires `reset`, positive
-   `windows_reset`, verified same account and exact credit `redeemed`; the displayed
-   remaining count and windows come from GET, not optimistic subtraction.
-6. Timeout/unknown result/missing readback removes Execute and reports uncertainty.
+   `windows_reset` and no mismatching returned credit ID. The displayed remaining
+   count and windows come from validated GET, not optimistic subtraction. Missing
+   GET after confirmed POST reports success with unavailable limits refresh.
+6. Timeout/unknown POST result removes Execute and reports operation uncertainty.
+   Exact GET `redeemed` confirms prior redemption only, not this operation success.
    A persistent per-profile/group/credit cache marker prevents resubmitting that
    ID, even from a new plan/restart. Only a definite `nothing_to_reset`/`no_credit`
    non-consume response releases that marker for a new explicit preparation.

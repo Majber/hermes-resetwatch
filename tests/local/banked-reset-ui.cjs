@@ -10,7 +10,7 @@ const send = async (method, params) => {
   calls.push(params.command);
   if (params.command.includes('--reset-prepare=')) return {code:0,stdout:JSON.stringify({local_build:build,account_key:key,identity:'fi**@example.invalid',plan_token:applicable ? 'b'.repeat(64) : null,expires_at:Date.now()/1000+120,observed_at:Date.now()/1000,available_count:2,applicable_available_count:applicable,windows,credits:[{id:'earliest',title:'First',expires_at:'2099-01-01T00:00:00Z'},{id:'later',title:'Second',expires_at:'2099-02-01T00:00:00Z'}],reason:applicable ? '' : 'OpenAI zgłasza 0 resetów do użycia teraz.'})};
   if (mode === 'timeout') throw new Error('timeout');
-  return {code:0,stdout:JSON.stringify({local_build:build,ok:true,windows_reset:2,after:{available_count:1,applicable_available_count:0,observed_at:Date.now()/1000,windows}})};
+  return {code:0,stdout:JSON.stringify({local_build:build,ok:true,uncertain:false,reason:mode==='read_failure'?'reset_confirmed_refresh_unavailable':'reset_confirmed',message:mode==='read_failure'?'Reset potwierdzony przez OpenAI: serwer potwierdził zużycie resetu. Odświeżenie limitów niedostępne.':'Reset potwierdzony przez OpenAI: 2 okna. Zużycie resetu potwierdzone odpowiedzią serwera.',windows_reset:2,after:mode==='read_failure'?null:{available_count:1,applicable_available_count:0,observed_at:Date.now()/1000,windows}})};
 };
 const context = {LOCAL_BUILD:build, SmallButton:'button', text:{primary:'inherit'},
   jsx:(type,props)=>({type,props}), jsxs:(type,props)=>({type,props}),
@@ -38,9 +38,13 @@ const final='Potwierdzam — nieodwracalnie użyj wybranego resetu';
  nodes(tree).find(n=>n.type==='input').props.onChange({target:{checked:true}}); tree=render();
  const submit=button(tree,final).props.onClick; await Promise.all([submit(),submit()]); tree=render();
  const posts=calls.filter(c=>c.includes('--reset-redeem=')); assert.equal(posts.length,1); assert.match(posts[0],/--reset-choice=1 --confirm-irreversible/); assert.equal(refreshed,1); assert.match(JSON.stringify(tree),/Reset potwierdzony/); assert.ok(nodes(tree).some(n=>n.props?.['data-reset-readback']));
+ assert.doesNotMatch(JSON.stringify(tree),/status redeemed w GET/);
+ mode='read_failure'; await button(tree,'Przygotuj ponownie (tylko odczyt)').props.onClick(); tree=render();
+ nodes(tree).find(n=>n.type==='input').props.onChange({target:{checked:true}}); tree=render(); await button(tree,final).props.onClick(); tree=render();
+ assert.match(JSON.stringify(tree),/Reset potwierdzony/); assert.match(JSON.stringify(tree),/Odświeżenie limitów niedostępne/); assert.doesNotMatch(JSON.stringify(tree),/Wynik niepewny/); assert.ok(!nodes(tree).some(n=>n.props?.['data-reset-readback']));
  mode='timeout'; await button(tree,'Przygotuj ponownie (tylko odczyt)').props.onClick(); tree=render();
  nodes(tree).find(n=>n.type==='input').props.onChange({target:{checked:true}}); tree=render(); await button(tree,final).props.onClick(); tree=render();
- assert.match(JSON.stringify(tree),/Wynik niepewny/); assert.equal(button(tree,final),undefined); assert.equal(calls.filter(c=>c.includes('--reset-redeem=')).length,2);
+ assert.match(JSON.stringify(tree),/Wynik niepewny/); assert.equal(button(tree,final),undefined); assert.equal(calls.filter(c=>c.includes('--reset-redeem=')).length,3);
  applicable=0; await button(tree,'Przygotuj ponownie (tylko odczyt)').props.onClick(); tree=render(); assert.equal(button(tree,final),undefined); assert.match(JSON.stringify(tree),/0 resetów/);
  // The real routing adapter must not retry even a schema rejection for requestOnce.
  let tries=0;

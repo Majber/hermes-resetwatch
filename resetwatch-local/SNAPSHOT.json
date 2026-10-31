@@ -1,13 +1,13 @@
 {
   "version": "0.2.22-local.5",
-  "local_build": "2026-10-31-banked-reset-1",
+  "local_build": "2026-10-31-banked-reset-2",
   "upstream_base": "d460334db633fbaa91f0f8b96679e8463bad2a04",
   "upstream_reference_main": "5b6c9c6",
   "upstream_reference_catalog": "248af31",
   "distribution": "standalone-desktop",
   "files": {
-    "plugin.js": "e2bd22da26bee1a2bce43b9bf4367d8d2562e126020ccf922807452b4e119428",
-    "probe.py": "eb7f1f653f4cd4a36df2ba2d89f0a3f7410b238f6427bbcc71a0b74fce92f727",
-    "manage.py": "0ddb6e5d969bd94f2875d7c850e395c207c673ee98cf1674524147b2c9915a51"
+    "plugin.js": "bbb3910da2895e647f4e875674d92bea92b5be15b81a993b547ff0fede8708e0",
+    "probe.py": "0d77ef8567b8f4436caff27d0bc432b8757d8f423ba87691caa8c76d2855b791",
+    "manage.py": "81d55588fa9580572371f44ed80311d3d24aee4648914b96d58894353ddf909f"
   }
 }

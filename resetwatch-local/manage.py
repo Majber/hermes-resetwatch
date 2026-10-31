@@ -137,7 +137,7 @@ import secrets
 import uuid
 
 RESET_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
-LOCAL_BUILD = '2026-10-31-banked-reset-1'
+LOCAL_BUILD = '2026-10-31-banked-reset-2'
 PLAN_SECONDS = 120
 
 
@@ -273,6 +273,8 @@ def _invalidate_reset_cache(probe, key):
 def redeem_reset(probe, key, token, choice, confirmed=False):
     outcome = {"ok": False, "uncertain": False, "submitted": False, "code": None,
                "windows_reset": None, "credit_verified": False, "after": None,
+               "consumption_confirmed": False, "response_credit_match": None,
+               "reason": "plan_invalid", "message": "Nie wysłano resetu: plan wygasł lub zmieniło się konto/reset. Przygotuj ponownie; niczego nie ponowiono.",
                "error": "Plan wygasł lub zmieniło się konto/reset. Przygotuj ponownie; niczego nie ponowiono."}
     try:
         if confirmed is not True or type(choice) is not int or choice < 0:
@@ -303,12 +305,22 @@ def redeem_reset(probe, key, token, choice, confirmed=False):
             json.dump({"credit_id": selected["id"], "at": time.time()}, stream)
         outcome["submitted"] = True
         outcome["uncertain"] = True
+        outcome.update(reason="post_unconfirmed", message="Wynik operacji niepewny: brak jednoznacznej odpowiedzi serwera. Nie wysyłamy ponownie; sprawdź ręcznie konto OpenAI.")
         try:
             response = _reset_request(ctx, "POST", "/rate-limit-reset-credits/consume",
                                       {"redeem_request_id": stored["redeem_request_id"], "credit_id": selected["id"]})
+            # Official success fields are top-level, not inside optional `credit`.
+            # If the server supplies an ID, it must match the explicitly selected ID.
+            ids = [response["credit_id"]] if "credit_id" in response else []
+            credit = response.get("credit")
+            if credit is not None and not isinstance(credit, dict):
+                ids.append(None)  # Malformed optional identity is not confirmation.
+            elif isinstance(credit, dict) and "id" in credit:
+                ids.append(credit["id"])
+            outcome["response_credit_match"] = all(i == selected["id"] for i in ids) if ids else None
             code = response.get("code")
             count = response.get("windows_reset")
-            if code in {"reset", "nothing_to_reset", "no_credit", "already_redeemed"}:
+            if isinstance(code, str) and code in {"reset", "nothing_to_reset", "no_credit", "already_redeemed"}:
                 outcome["code"] = code
             if type(count) is int and count >= 0:
                 outcome["windows_reset"] = count
@@ -320,16 +332,36 @@ def redeem_reset(probe, key, token, choice, confirmed=False):
                 raise ValueError("Identity changed during readback")
             outcome["after"] = {k: after[k] for k in ("available_count", "applicable_available_count", "windows", "observed_at")}
             exact = next((c for c in after["credits"] if c["id"] == selected["id"]), None)
-            # Absence alone is not proof of redemption (could be expiry/filtering).
+            # Exact terminal status proves redemption, not which operation did it.
+            # Missing credit/count drop/changed windows alone prove neither.
             outcome["credit_verified"] = bool(exact and exact.get("status") == "redeemed")
-            outcome["ok"] = outcome["code"] == "reset" and type(outcome["windows_reset"]) is int and outcome["windows_reset"] > 0 and outcome["credit_verified"]
-            outcome["uncertain"] = not outcome["ok"] and outcome["code"] not in {"nothing_to_reset", "no_credit"}
-            outcome["error"] = None if outcome["ok"] else "Brak pełnego potwierdzenia. Sprawdź konto i aktualną listę; nie ponawiaj bez ręcznej weryfikacji."
         except Exception:
-            outcome["error"] = "Wynik niepewny: odczyt po operacji nie powiódł się. Sprawdź ręcznie w OpenAI. Nie ponawiaj automatycznie."
+            pass  # Readback failure cannot erase authoritative POST confirmation.
+        mismatch = outcome["response_credit_match"] is False
+        outcome["ok"] = (not mismatch and outcome["code"] == "reset"
+                         and type(outcome["windows_reset"]) is int and outcome["windows_reset"] > 0)
+        outcome["consumption_confirmed"] = outcome["ok"] or outcome["credit_verified"]
+        nonconsume = not mismatch and outcome["code"] in {"nothing_to_reset", "no_credit"} and not outcome["credit_verified"]
+        outcome["uncertain"] = not outcome["ok"] and not nonconsume and not (not mismatch and outcome["code"] == "already_redeemed")
+        if mismatch:
+            outcome.update(reason="response_credit_mismatch", message="Wynik operacji niepewny: odpowiedź serwera wskazuje inny reset niż wybrany. Nie potwierdzamy powodzenia tej operacji i nie ponawiamy jej. Sprawdź ręcznie konto OpenAI.")
+        elif outcome["ok"]:
+            if outcome["after"] is None:
+                outcome.update(reason="reset_confirmed_refresh_unavailable", message=f"Reset potwierdzony przez OpenAI: serwer potwierdził zużycie resetu i reset {outcome['windows_reset']} okien. Odświeżenie limitów niedostępne; odśwież je ręcznie. Nie wysyłamy resetu ponownie.")
+            else:
+                outcome.update(reason="reset_confirmed", message=f"Reset potwierdzony przez OpenAI: {outcome['windows_reset']} okna. Zużycie resetu potwierdzone odpowiedzią serwera; bieżące limity odczytano ponownie.")
+        elif outcome["credit_verified"]:
+            outcome.update(reason="prior_redemption_verified", message="Odczyt potwierdza, że wybrany reset ma status redeemed (został już zużyty). Nie potwierdza to powodzenia tej konkretnej operacji. Nie wysyłamy ponownie; sprawdź ręcznie konto OpenAI.")
+        elif nonconsume:
+            outcome.update(reason=outcome["code"], message="OpenAI nie potwierdziło zużycia resetu: " + outcome["code"] + "." + (" Odświeżenie limitów niedostępne." if outcome["after"] is None else " Bieżący stan odczytano ponownie."))
+        elif outcome["code"] == "already_redeemed":
+            outcome.update(reason="already_redeemed", message="OpenAI zgłasza already_redeemed: reset był już użyty. To nie jest potwierdzenie nowego resetu w tej operacji. Nie wysyłamy ponownie.")
+        if outcome["uncertain"]:
+            outcome["message"] = "Wynik operacji niepewny. " + outcome["message"] if not outcome["message"].startswith("Wynik operacji niepewny") else outcome["message"]
+        outcome["error"] = None if outcome["ok"] else outcome["message"]
         _invalidate_reset_cache(probe, key)
-        if outcome["code"] in {"nothing_to_reset", "no_credit"} and not outcome["credit_verified"]:
-            attempt.unlink(missing_ok=True)  # A new explicit plan is allowed only for a definite non-consume outcome.
+        if nonconsume:
+            attempt.unlink(missing_ok=True)  # New explicit plan only for definite non-consume.
     except Exception:
         pass  # No exception strings, response bodies, bearer or auth rows in output.
     return outcome

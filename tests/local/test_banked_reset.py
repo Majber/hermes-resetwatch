@@ -32,11 +32,23 @@ class BankedResetRegression(unittest.TestCase):
             calls.append((method, path, payload))
             if method == 'POST':
                 state['post'] = True
-                if state['mode'] == 'timeout':
+                if state['mode'] in ('timeout', 'timeout_redeemed'):
                     raise TimeoutError(token)
                 if state['mode'] == 'empty':
                     return {}
-                return dict(code='reset', windows_reset=2)
+                if state['mode'] == 'mismatch':
+                    return dict(code='reset', windows_reset=2, credit={'id': 'wrong-credit'})
+                if state['mode'] == 'top_mismatch':
+                    return dict(code='reset', windows_reset=2, credit_id='wrong-credit')
+                if state['mode'] == 'already':
+                    return dict(code='already_redeemed', windows_reset=0)
+                if state['mode'] in ('no_credit', 'nothing_to_reset'):
+                    return dict(code=state['mode'], windows_reset=0)
+                if state['mode'] == 'invalid_count':
+                    return dict(code='reset', windows_reset=True)
+                return dict(code='reset', windows_reset=2, **({'credit': {'id': payload['credit_id']}} if state['mode'] == 'matched_id' else {}))
+            if state['post'] and state['mode'] == 'read_failure':
+                raise TimeoutError(token)
             if path == '/usage':
                 result = copy.deepcopy(usage)
                 if state['post']:
@@ -46,7 +58,10 @@ class BankedResetRegression(unittest.TestCase):
             result = copy.deepcopy(credits)
             if state['post']:
                 result['available_count'] = 1
-                result['credits'][1]['status'] = 'redeemed'
+                if state['mode'] in ('redeemed', 'timeout_redeemed', 'already'):
+                    result['credits'][1]['status'] = 'redeemed'
+                else:
+                    result['credits'].pop(1)  # Available-only GET omits the consumed ID.
             return result
         with tempfile.TemporaryDirectory(prefix='resetwatch-reset-') as tmp:
             probe = SimpleNamespace(_profile_home=Path(tmp), LOCAL_BUILD='fixture', CODEX_DEFAULT_BASE_URL='https://chatgpt.com/backend-api/codex',
@@ -93,19 +108,33 @@ class BankedResetRegression(unittest.TestCase):
                 self.assertRegex(posts[0][2]['redeem_request_id'], r'^[0-9a-f-]{36}$')
                 self.assertFalse(manage.redeem_reset(probe, key, prepared['plan_token'], 0, True)['ok'])
                 self.assertEqual(len([c for c in calls if c[0] == 'POST']), 1)
-                for mode in ('timeout', 'empty'):
+                for mode in ('timeout', 'timeout_redeemed', 'empty', 'mismatch', 'top_mismatch', 'invalid_count', 'already', 'matched_id', 'read_failure', 'redeemed', 'no_credit', 'nothing_to_reset'):
                     credits['credits'][1]['id'] = 'earlier-' + mode
                     state.update(post=False, mode=mode)
                     prepared = manage.prepare_reset(probe, key)
                     start = len(calls)
                     result = manage.redeem_reset(probe, key, prepared['plan_token'], 0, True)
-                    self.assertFalse(result['ok']); self.assertTrue(result['uncertain'])
-                    self.assertEqual([c[0] for c in calls[start:]], ['GET', 'GET', 'POST', 'GET', 'GET'])
-                    self.assertEqual(result['after']['available_count'], 1)
+                    success = mode in ('matched_id', 'read_failure', 'redeemed')
+                    definite_nonconsume = mode in ('no_credit', 'nothing_to_reset')
+                    self.assertEqual(result['ok'], success, (mode, result))
+                    self.assertEqual(result['uncertain'], not success and not definite_nonconsume and mode != 'already', (mode, result))
+                    self.assertEqual(result['consumption_confirmed'], success or mode in ('already', 'timeout_redeemed'))
+                    self.assertEqual(result['credit_verified'], mode in ('redeemed', 'timeout_redeemed', 'already'))
+                    self.assertEqual([c[0] for c in calls[start:]], ['GET', 'GET', 'POST', 'GET'] + ([] if mode == 'read_failure' else ['GET']))
+                    if mode == 'read_failure':
+                        self.assertIsNone(result['after'])
+                        self.assertEqual(result['reason'], 'reset_confirmed_refresh_unavailable')
+                        self.assertIn('potwierdził', result['message'])
+                    else:
+                        self.assertEqual(result['after']['available_count'], 1)
+                    if mode in ('mismatch', 'top_mismatch'):
+                        self.assertEqual(result['reason'], 'response_credit_mismatch')
+                    if mode in ('already', 'timeout_redeemed'):
+                        self.assertEqual(result['reason'], 'prior_redemption_verified')
                     self.assertNotIn(token, json.dumps(result))
-                    state['post'] = False  # Simulate stale inventory after an ambiguous attempt.
+                    state['post'] = False  # Simulate stale inventory after any attempt.
                     blocked = manage.prepare_reset(probe, key)
-                    self.assertNotIn('earlier-' + mode, [c['id'] for c in blocked['credits']])
+                    self.assertEqual('earlier-' + mode in [c['id'] for c in blocked['credits']], definite_nonconsume)
                 state.update(post=False, mode='success')
                 prepared = manage.prepare_reset(probe, key)
                 self.assertFalse(manage.redeem_reset(probe, key, prepared['plan_token'], 0, False)['ok'])

@@ -20,7 +20,7 @@ const PLUGIN_NAME = 'Resetwatch Local'
 const ROUTE = '/resetwatch-local'
 const VERSION = '0.2.22-local.5'
 // Update all stamped runtime files together when deploying a paired build.
-const LOCAL_BUILD = '2026-10-31-banked-reset-1'
+const LOCAL_BUILD = '2026-10-31-banked-reset-2'
 const POLL_MS = 5 * 60 * 1000
 // Manual Refresh floor. probe.py enforces the same 60s on --fresh, so a
 // click inside this window would only replay the cache anyway.
@@ -1975,8 +1975,7 @@ function BankedResetAction({ accountKey, alias, removalContext }) {
       const result = await prepared.redeem(choice)
       if (!alive.current) return
       setAfter(result.after)
-      setMessage(result.ok ? `Reset potwierdzony: ${result.windows_reset} okna; konkretny reset ma status redeemed w GET.`
-        : `${result.uncertain ? 'Wynik niepewny' : 'Reset niepotwierdzony'} · kod: ${result.code || '?'} · okna: ${result.windows_reset ?? '?'}. ${result.error || 'Sprawdź ręcznie konto OpenAI.'}`)
+      setMessage(result.message || result.error || 'Brak jednoznacznego potwierdzenia serwera. Nie wysyłamy ponownie; sprawdź ręcznie konto OpenAI.')
     } catch { if (alive.current) setMessage('Wynik niepewny. Nie wysyłamy ponownie. Sprawdź ręcznie konto OpenAI; potem przygotuj nowy odczyt. Ten reset jest zabezpieczony przed ponowieniem.') }
     finally {
       lock.current = false; if (alive.current) setBusy(false)
